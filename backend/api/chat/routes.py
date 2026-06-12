@@ -64,7 +64,13 @@ from db.database import get_db
 from models.deep_agent import DeepAgentTemplate, ChatSession, DeepAgentConfig, SessionDocument
 from models.core import DocumentType, IndexingStatus
 from services.deepagent_factory import DeepAgentFactory
-from core.workflows.events.emitter import ExecutionEventCallbackHandler
+from core.runtimes import get_runtime
+from core.runtimes.base import (
+    RuntimeEvent,
+    RuntimeSessionRef,
+    has_multimodal_blocks,
+    make_json_safe,
+)
 from services.conversation_context import ConversationContextService
 
 logger = logging.getLogger(__name__)
@@ -76,24 +82,74 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 # Helper Functions
 # =============================================================================
 
-def make_json_safe(obj):
+# NOTE: make_json_safe / has_multimodal_blocks moved to core.runtimes.base
+# (imported above) so runtime implementations can reuse them.
+
+
+def sse_event(payload: Dict[str, Any]) -> str:
+    """Encode a payload as a Server-Sent Event data frame."""
+    return f"data: {json.dumps(make_json_safe(payload))}\n\n"
+
+
+def current_timestamp() -> str:
+    """Return an ISO timestamp for persisted chat messages."""
+    return datetime.utcnow().isoformat()
+
+
+def runtime_event_to_sse_payload(revent: RuntimeEvent) -> Optional[Dict[str, Any]]:
+    """Dumb RuntimeEvent -> SSE frame mapping.
+
+    Keeps the public SSE contract (chunk/thinking/tool_start/tool_end/
+    tool_artifact/custom_event/error/complete) byte-identical to the
+    pre-runtime implementation. Guarded by tests/test_runtime_sse_contract.py.
     """
-    Recursively convert objects to JSON-safe format.
-    Filters out non-serializable items like LangGraph Command objects.
-    """
-    if isinstance(obj, (str, int, float, bool, type(None))):
-        return obj
-    elif isinstance(obj, dict):
-        return {k: make_json_safe(v) for k, v in obj.items() if not k.startswith('_')}
-    elif isinstance(obj, (list, tuple)):
-        return [make_json_safe(item) for item in obj]
-    else:
-        # Skip non-serializable objects like Command
-        try:
-            json.dumps(obj)
-            return obj
-        except (TypeError, ValueError):
-            return None
+    rtype = revent.get("type")
+
+    if rtype == "text_delta":
+        return {"type": "chunk", "content": revent.get("text")}
+
+    if rtype == "thinking_delta":
+        return {"type": "thinking", "content": revent.get("text")}
+
+    if rtype == "tool_start":
+        return {
+            "type": "tool_start",
+            "tool_name": revent.get("tool_name") or "unknown",
+            "data": revent.get("data"),
+        }
+
+    if rtype == "tool_end":
+        return {
+            "type": "tool_end",
+            "tool_name": revent.get("tool_name") or "unknown",
+            "data": revent.get("data"),
+        }
+
+    if rtype == "tool_artifact":
+        return {
+            "type": "tool_artifact",
+            "tool_name": revent.get("tool_name"),
+            "artifact": (revent.get("data") or {}).get("artifact"),
+        }
+
+    if rtype == "custom":
+        return {"type": "custom_event", "data": revent.get("data")}
+
+    if rtype == "error":
+        return {"type": "error", "message": revent.get("error")}
+
+    if rtype == "complete":
+        data = revent.get("data") or {}
+        return {
+            "type": "complete",
+            "content": revent.get("text"),
+            "artifacts": data.get("artifacts", []),
+            "content_blocks": data.get("content_blocks", []),
+            "has_multimodal": data.get("has_multimodal", False),
+        }
+
+    # "usage" and any future event types have no SSE frame yet.
+    return None
 
 
 # =============================================================================
@@ -103,6 +159,7 @@ def make_json_safe(obj):
 class StartChatRequest(BaseModel):
     """Request to start a new chat session."""
     agent_id: int
+    project_id: Optional[int] = None
     user_id: Optional[int] = None
 
 
@@ -110,12 +167,18 @@ class ChatMessage(BaseModel):
     """A single chat message."""
     role: str  # 'user' or 'assistant'
     content: str
+    timestamp: Optional[str] = None
+    content_blocks: Optional[List[Dict[str, Any]]] = None
+    artifacts: Optional[List[Dict[str, Any]]] = None
+    has_multimodal: Optional[bool] = None
+    banked: Optional[bool] = None
 
 
 class SendMessageRequest(BaseModel):
     """Request to send a message in a chat session."""
     session_id: str
     message: str
+    enable_hitl: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -131,11 +194,14 @@ class ChatSessionResponse(BaseModel):
     """Response with chat session details."""
     session_id: str
     agent_id: int
+    project_id: Optional[int] = None
     agent_name: str
     is_active: bool
     message_count: int
     created_at: str
     updated_at: str
+    # Execution runtime backing this session (langgraph, google_adk, ...)
+    runtime: str = "langgraph"
 
 
 class ChatHistoryResponse(BaseModel):
@@ -151,26 +217,14 @@ class ChatHistoryResponse(BaseModel):
 
 from services.chat_session_manager import get_session_manager
 
-# Legacy: Will be removed after migration to session manager
-active_agents: Dict[str, Any] = {}
-
-
-def get_cached_agent(session_id: str) -> Optional[Any]:
-    """Get cached agent instance using session manager."""
-    manager = get_session_manager()
-    agent = manager.get_agent(session_id)
-    if agent:
-        return agent
-    # Fallback to legacy cache
-    return active_agents.get(session_id)
-
-
-def cache_agent(session_id: str, agent_instance: Any):
-    """Cache agent instance using session manager."""
-    manager = get_session_manager()
-    manager.cache_agent(session_id, agent_instance)
-    # Also update legacy cache for compatibility
-    active_agents[session_id] = agent_instance
+# Agent instance caching relocated to the LangGraph runtime. Re-exported here
+# because the non-streaming endpoint and the session lifecycle endpoints still
+# manage the cache directly (single shared cache either way).
+from core.runtimes.langgraph_runtime import (
+    active_agents,
+    cache_agent,
+    get_cached_agent,
+)
 
 
 # =============================================================================
@@ -204,11 +258,17 @@ async def start_chat_session(
         # Create session ID
         session_id = str(uuid.uuid4())
 
+        # The session is pinned to the agent's runtime at start time so later
+        # template edits don't silently change a live conversation's engine.
+        agent_runtime = getattr(agent, "runtime", None) or "langgraph"
+
         # Create session record
         session = ChatSession(
             session_id=session_id,
             agent_id=agent.id,
+            project_id=request.project_id or getattr(agent, "project_id", None),
             user_id=request.user_id,
+            runtime=agent_runtime,
             messages=[],
             metrics={
                 "total_tokens": 0,
@@ -230,11 +290,13 @@ async def start_chat_session(
         return ChatSessionResponse(
             session_id=session.session_id,
             agent_id=agent.id,
+            project_id=session.project_id,
             agent_name=agent.name,
             is_active=session.is_active,
             message_count=len(session.messages),
             created_at=session.created_at.isoformat(),
-            updated_at=session.updated_at.isoformat()
+            updated_at=session.updated_at.isoformat(),
+            runtime=session.runtime or "langgraph"
         )
 
     except Exception as e:
@@ -254,6 +316,13 @@ async def send_message(
 ):
     """
     Send a message and receive a complete response (non-streaming).
+
+    NOTE(runtime): intentionally NOT routed through the AgentRuntime
+    abstraction yet. It uses synchronous ``agent.invoke()`` rather than the
+    streaming event loop; funneling it through ``runtime.stream()`` would
+    change execution semantics (astream_events vs invoke). It still shares
+    the runtime's agent cache via get_cached_agent/cache_agent, so a future
+    ``runtime.invoke()`` capability can absorb it cleanly.
 
     Storage Flow:
     1. Append user message to session.messages (PostgreSQL JSON)
@@ -447,12 +516,23 @@ async def send_message_stream(
         # Store session_id and agent config before entering generator
         # to avoid detached session issues
         session_id = session.session_id
+        session_project_id = getattr(session, "project_id", None)
+        session_runtime = getattr(session, "runtime", None) or "langgraph"
         agent_config = agent.config.copy() if agent.config else {}
+        # Thread runtime-native references (e.g. the Anthropic managed agent
+        # id provisioned at template save) through to runtime.create_session.
+        # Extra keys are ignored by DeepAgentConfig validation elsewhere.
+        agent_external_refs = getattr(agent, "external_refs", None)
+        if agent_external_refs:
+            agent_config["external_refs"] = dict(agent_external_refs)
         agent_project_id = getattr(agent, 'project_id', None)
 
         async def generate_stream():
             """Generate streaming response."""
             full_response = ""
+            thinking_response = ""
+            assistant_artifacts: List[Dict[str, Any]] = []
+            assistant_content_blocks: List[Dict[str, Any]] = []
             all_context = ""
             rag_tokens_used = 0
 
@@ -471,14 +551,15 @@ async def send_message_stream(
                 logger.info(f"Before adding user message: total_messages={len(fresh_session.messages)}")
                 fresh_session.messages.append({
                     "role": "user",
-                    "content": request.message
+                    "content": request.message,
+                    "timestamp": current_timestamp()
                 })
                 flag_modified(fresh_session, "messages")
                 db.commit()  # Commit user message immediately
                 db.refresh(fresh_session)  # Refresh to confirm save
                 logger.info(f"✓ User message saved to DB: session={session_id}, total_messages={len(fresh_session.messages)}")
 
-                project_id = agent_project_id
+                project_id = session_project_id or agent_project_id
 
                 if project_id:
                     from services.context_retrieval import context_retriever
@@ -531,101 +612,48 @@ async def send_message_stream(
                         rag_tokens_used = token_counter.count_tokens(all_context)
                         logger.info(f"Retrieved RAG context: {rag_tokens_used} tokens")
 
-                # Get or create agent instance
-                agent_instance = get_cached_agent(request.session_id)
-
-                if not agent_instance:
-                    config = DeepAgentConfig(**agent_config)
-                    agent_instance, tools, callbacks = await DeepAgentFactory.create_deep_agent(
-                        config=config,
-                        project_id=project_id or 0,
-                        task_id=0,
-                        context=all_context,  # Inject RAG context
-                        mcp_manager=None,
-                        vector_store=None
-                    )
-                    cache_agent(request.session_id, agent_instance)
-
-                # Create event handler for tracking tool calls and subagent activity
-                event_handler = ExecutionEventCallbackHandler(
-                    project_id=project_id or 0,
-                    task_id=0,
-                    workflow_id=None,  # No workflow for chat sessions
-                    enable_sanitization=True,
-                    save_to_db=False  # Don't persist to DB for chat sessions
+                # Resolve the execution runtime for this session and acquire
+                # (or build) the runtime-side agent/session. Agent acquisition,
+                # the astream_events loop, and event normalization now live in
+                # the runtime (core/runtimes/langgraph_runtime.py).
+                runtime = get_runtime(session_runtime)
+                ref = await runtime.create_session(
+                    config=agent_config,
+                    session_id=session_id,
+                    context=all_context,  # Inject RAG context
+                    project_id=project_id,
                 )
 
-                # Create new user message (checkpointer loads previous messages)
-                from langchain_core.messages import HumanMessage
-                new_message = HumanMessage(content=request.message)
-
-                # Use astream_events for token-by-token streaming
-                async for event in agent_instance.astream_events(
-                    {"messages": [new_message]},
-                    config={
-                        "configurable": {"thread_id": session_id},
-                        "callbacks": [event_handler],
-                        "recursion_limit": 500  # Increased from default 25 for complex tool chains
+                async for revent in runtime.stream(
+                    ref,
+                    request.message,
+                    options={
+                        "enable_hitl": request.enable_hitl,
+                        "project_id": project_id,
                     },
-                    version="v2"
                 ):
-                    kind = event.get("event")
+                    rtype = revent.get("type")
 
-                    # Stream tool call events
-                    if kind == "on_tool_start":
-                        tool_data = event.get("data", {})
-                        # Tool name is in event["name"] for astream_events v2
-                        tool_name = event.get("name", "unknown")
-                        # Filter out non-serializable objects
-                        safe_data = make_json_safe(tool_data)
-                        yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': tool_name, 'data': safe_data})}\n\n"
+                    # Accumulate state the route persists to the DB afterwards
+                    # (persistence is runtime-agnostic and stays here).
+                    if rtype == "text_delta":
+                        full_response += revent.get("text") or ""
+                    elif rtype == "thinking_delta":
+                        thinking_response += revent.get("text") or ""
+                    elif rtype == "tool_artifact":
+                        artifact = (revent.get("data") or {}).get("artifact")
+                        if isinstance(artifact, dict):
+                            assistant_artifacts.append(artifact)
+                            if artifact.get("type") in {"image", "audio", "file", "resource"}:
+                                assistant_content_blocks.append(artifact)
 
-                    elif kind == "on_tool_end":
-                        tool_data = event.get("data", {})
-                        tool_name = event.get("name", "unknown")
-                        # Filter out non-serializable objects
-                        safe_data = make_json_safe(tool_data)
-                        yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': tool_name, 'data': safe_data})}\n\n"
-
-                    # Stream custom events (LangGraph-style progress bars, status badges, etc.)
-                    elif kind == "on_custom_event" or (kind == "custom_event"):
-                        custom_data = event.get("data", {})
-                        safe_data = make_json_safe(custom_data)
-                        yield f"data: {json.dumps({'type': 'custom_event', 'data': safe_data})}\n\n"
-
-                    # Stream LLM tokens as they're generated
-                    elif kind == "on_chat_model_stream":
-                        chunk_content = event.get("data", {}).get("chunk")
-                        if chunk_content and hasattr(chunk_content, "content"):
-                            token = chunk_content.content
-
-                            # Ensure token is a string (handle cases where content might be a list of blocks)
-                            if isinstance(token, list):
-                                # Skip empty lists
-                                if not token:
-                                    continue
-                                # Extract text from content blocks: [{'text': '...', 'type': 'text'}, ...]
-                                parts = [
-                                    block.get("text", "") if isinstance(block, dict) else str(block)
-                                    for block in token
-                                ]
-                                # Join parts directly - streaming sends complete tokens
-                                token = "".join(parts)
-                            elif token is None:
-                                continue
-                            elif not isinstance(token, str):
-                                token = str(token)
-
-                            if token:
-                                full_response += token
-                                yield f"data: {json.dumps({'type': 'chunk', 'content': token})}\n\n"
-
-                # Send completion event
-                yield f"data: {json.dumps({'type': 'complete', 'content': full_response})}\n\n"
+                    payload = runtime_event_to_sse_payload(revent)
+                    if payload is not None:
+                        yield sse_event(payload)
 
             except Exception as e:
                 logger.error(f"Error in stream: {e}")
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                yield sse_event({"type": "error", "message": str(e)})
 
             finally:
                 # Always save assistant message, even if there was an error
@@ -639,10 +667,18 @@ async def send_message_stream(
                         if final_session:
                             logger.info(f"Before adding assistant message: total_messages={len(final_session.messages)}")
 
-                            final_session.messages.append({
+                            assistant_message = {
                                 "role": "assistant",
-                                "content": full_response
-                            })
+                                "content": full_response,
+                                "timestamp": current_timestamp(),
+                                "artifacts": assistant_artifacts,
+                                "content_blocks": assistant_content_blocks,
+                                "has_multimodal": has_multimodal_blocks(assistant_content_blocks),
+                            }
+                            # Thinking is stored separately and never merged into content
+                            if thinking_response:
+                                assistant_message["thinking"] = thinking_response
+                            final_session.messages.append(assistant_message)
                             flag_modified(final_session, "messages")
 
                             # Update metrics with RAG token tracking
@@ -724,45 +760,13 @@ async def get_session_metrics(
     rag_tokens = session.metrics.get("rag_context_tokens", 0)
 
     agent = db.query(DeepAgentTemplate).filter_by(id=session.agent_id).first()
-    model = "claude-sonnet-4-5-20250929"
+    model = "claude-sonnet-4-6"
     if agent and agent.config:
-        model = agent.config.get("model", "claude-sonnet-4-5-20250929")
+        model = agent.config.get("model", "claude-sonnet-4-6")
 
-    MODEL_PRICING = {
-        "claude-sonnet-4-5-20250929": 9.0,
-        "claude-sonnet-4": 9.0,
-        "claude-opus-4-20250514": 45.0,
-        "claude-opus-4": 45.0,
-        "claude-3-5-sonnet-20241022": 6.0,
-        "claude-3-5-sonnet-20240620": 6.0,
-        "claude-3-5-haiku-20241022": 1.5,
-        "claude-3-opus-20240229": 37.5,
-        "claude-3-sonnet-20240229": 6.0,
-        "claude-3-haiku-20240307": 0.75,
-        "gpt-4o-2024-11-20": 5.0,
-        "gpt-4o-2024-08-06": 5.0,
-        "gpt-4o-2024-05-13": 10.0,
-        "gpt-4o": 7.5,
-        "gpt-4o-mini-2024-07-18": 0.3,
-        "gpt-4o-mini": 0.3,
-        "gpt-4-turbo-2024-04-09": 15.0,
-        "gpt-4-turbo": 15.0,
-        "gpt-4-0125-preview": 30.0,
-        "gpt-4": 30.0,
-        "gpt-3.5-turbo": 1.5,
-        "gemini-2.0-flash-exp": 0.0,
-        "gemini-exp-1206": 0.0,
-        "gemini-2.0-flash-thinking-exp-1219": 0.0,
-        "gemini-2.0-flash-thinking-exp": 0.0,
-        "gemini-1.5-pro-002": 2.5,
-        "gemini-1.5-pro": 2.5,
-        "gemini-1.5-flash-002": 0.15,
-        "gemini-1.5-flash": 0.15,
-        "deepseek-chat": 0.55,
-        "deepseek-reasoner": 2.19,
-    }
+    from core.models.registry import model_registry
 
-    cost_per_1m = MODEL_PRICING.get(model, 9.0)
+    cost_per_1m = model_registry.get_blended_cost_per_1m(model, default=9.0)
     estimated_cost = (total_tokens / 1_000_000) * cost_per_1m
 
     # Calculate current context size
@@ -815,6 +819,7 @@ async def end_chat_session(
     session.is_active = False
     import datetime
     session.ended_at = datetime.datetime.utcnow()
+    session_runtime = getattr(session, "runtime", None) or "langgraph"
     db.commit()
 
     # Cleanup agent instance from cache
@@ -825,11 +830,13 @@ async def end_chat_session(
     if session_id in active_agents:
         del active_agents[session_id]
 
-    # Cleanup LangGraph checkpoints for this thread
+    # Cleanup runtime-side state (LangGraph checkpoints) for this thread
     cleanup_success = False
     try:
-        from core.workflows.checkpointing.utils import delete_thread_checkpoints
-        await delete_thread_checkpoints(thread_id=session_id)
+        runtime = get_runtime(session_runtime)
+        await runtime.destroy_session(RuntimeSessionRef(
+            runtime=session_runtime, session_id=session_id, external_ref=session_id
+        ))
         cleanup_success = True
         logger.info(f"Cleaned up checkpoints for session {session_id}")
     except Exception as e:
@@ -848,14 +855,87 @@ async def end_chat_session(
     }
 
 
+@router.delete("/{session_id}")
+async def delete_chat_session(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """Delete a chat session, its uploaded session documents, and runtime state."""
+    session = db.query(ChatSession).filter(
+        ChatSession.session_id == session_id
+    ).first()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    documents = db.query(SessionDocument).filter(
+        SessionDocument.session_id == session_id
+    ).all()
+    document_paths = [doc.file_path for doc in documents if doc.file_path]
+
+    # Capture before delete: the row is gone once we commit.
+    session_runtime = getattr(session, "runtime", None) or "langgraph"
+
+    db.delete(session)
+    db.commit()
+
+    removed_files = 0
+    for file_path in document_paths:
+        try:
+            from pathlib import Path
+            path = Path(file_path)
+            if path.exists() and path.is_file():
+                path.unlink()
+                removed_files += 1
+        except Exception as e:
+            logger.warning(f"Failed to remove session document {file_path}: {e}")
+
+    manager = get_session_manager()
+    removed = manager.remove_session(session_id)
+    active_agents.pop(session_id, None)
+
+    cleanup_success = False
+    try:
+        runtime = get_runtime(session_runtime)
+        await runtime.destroy_session(RuntimeSessionRef(
+            runtime=session_runtime, session_id=session_id, external_ref=session_id
+        ))
+        cleanup_success = True
+    except Exception as e:
+        logger.warning(f"Failed to cleanup checkpoints for deleted session {session_id}: {e}")
+
+    logger.info(
+        "Deleted chat session %s (agent_removed=%s, checkpoints_cleaned=%s, files_removed=%s)",
+        session_id,
+        removed,
+        cleanup_success,
+        removed_files,
+    )
+
+    return {
+        "status": "success",
+        "message": "Session deleted",
+        "session_id": session_id,
+        "agent_removed": removed,
+        "checkpoints_cleaned": cleanup_success,
+        "files_removed": removed_files,
+    }
+
+
 @router.get("/sessions")
 async def list_chat_sessions(
     agent_id: Optional[int] = None,
+    project_id: Optional[int] = None,
+    include_uncategorized: bool = True,
     active_only: bool = False,
     limit: int = 50,  # Default to 50 most recent conversations
     db: Session = Depends(get_db)
 ):
-    """List all chat sessions, ordered by most recently updated first."""
+    """List chat sessions, ordered by most recently updated first.
+
+    When project_id is provided, include uncategorized sessions by default so
+    older conversations created before project scoping still remain reachable.
+    """
     query = db.query(ChatSession).join(
         DeepAgentTemplate,
         ChatSession.agent_id == DeepAgentTemplate.id
@@ -863,6 +943,14 @@ async def list_chat_sessions(
 
     if agent_id:
         query = query.filter(ChatSession.agent_id == agent_id)
+
+    if project_id is not None and include_uncategorized:
+        query = query.filter(
+            (ChatSession.project_id == project_id) |
+            (ChatSession.project_id.is_(None))
+        )
+    elif project_id is not None:
+        query = query.filter(ChatSession.project_id == project_id)
 
     if active_only:
         query = query.filter(ChatSession.is_active == True)
@@ -888,12 +976,14 @@ async def list_chat_sessions(
         result.append({
             "session_id": session.session_id,
             "agent_id": session.agent_id,
+            "project_id": session.project_id,
             "agent_name": agent.name if agent else "Unknown Agent",
             "is_active": session.is_active,
             "message_count": len(session.messages),
             "last_message_preview": last_message_preview,
             "created_at": session.created_at.isoformat(),
-            "updated_at": session.updated_at.isoformat()
+            "updated_at": session.updated_at.isoformat(),
+            "runtime": getattr(session, "runtime", None) or "langgraph"
         })
 
     return result
@@ -951,6 +1041,18 @@ async def recover_messages_from_checkpoint(
     If messages were lost from the database but still exist in the
     LangGraph checkpoint storage, this endpoint can retrieve and restore them.
     """
+    # Checkpoint inspection reads LangGraph checkpoint tables directly; gate
+    # it for sessions backed by other runtimes. (Outside the try below so the
+    # 400 is not swallowed by the generic 500 handler.)
+    gate_session = db.query(ChatSession).filter(
+        ChatSession.session_id == session_id
+    ).first()
+    if gate_session is not None and (getattr(gate_session, "runtime", None) or "langgraph") != "langgraph":
+        raise HTTPException(
+            status_code=400,
+            detail="Checkpoint inspection is only supported for the 'langgraph' runtime"
+        )
+
     try:
         # Check if session exists
         session = db.query(ChatSession).filter(
@@ -1104,6 +1206,86 @@ async def approve_hitl(
 # =============================================================================
 # Message Banking Endpoints (for Context Management)
 # =============================================================================
+
+
+@router.delete("/{session_id}/messages/{message_index}")
+async def delete_chat_message(
+    session_id: str,
+    message_index: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a user message from persisted chat history.
+
+    This resets the live runtime cache/checkpoints for the session because
+    LangGraph runtime memory may still contain the removed message.
+    """
+    session = db.query(ChatSession).filter(
+        ChatSession.session_id == session_id
+    ).first()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if message_index < 0 or not session.messages or message_index >= len(session.messages):
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    message = session.messages[message_index]
+    if message.get("role") != "user":
+        raise HTTPException(status_code=400, detail="Only user messages can be deleted")
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    removed_message = session.messages.pop(message_index)
+
+    # Keep document attachments aligned with the shifted message indexes.
+    session_docs = db.query(SessionDocument).filter(
+        SessionDocument.session_id == session_id
+    ).all()
+    for doc in session_docs:
+        if doc.message_index is None:
+            continue
+        if doc.message_index == message_index:
+            doc.message_index = None
+        elif doc.message_index > message_index:
+            doc.message_index -= 1
+
+    session.is_active = False
+    session.ended_at = datetime.utcnow()
+    flag_modified(session, "messages")
+    db.commit()
+
+    manager = get_session_manager()
+    removed = manager.remove_session(session_id)
+    active_agents.pop(session_id, None)
+
+    cleanup_success = False
+    try:
+        session_runtime = getattr(session, "runtime", None) or "langgraph"
+        runtime = get_runtime(session_runtime)
+        cleanup_success = await runtime.destroy_session(RuntimeSessionRef(
+            runtime=session_runtime, session_id=session_id, external_ref=session_id
+        ))
+    except Exception as e:
+        logger.warning(f"Failed to cleanup checkpoints for session {session_id} after message delete: {e}")
+
+    logger.info(
+        "Deleted user message %s in chat session %s (runtime_reset=%s, checkpoints_cleaned=%s)",
+        message_index,
+        session_id,
+        removed,
+        cleanup_success,
+    )
+
+    return {
+        "status": "success",
+        "session_id": session_id,
+        "message_index": message_index,
+        "deleted_role": removed_message.get("role"),
+        "runtime_reset": True,
+        "session_active": False,
+        "checkpoints_cleaned": cleanup_success,
+    }
 
 
 @router.post("/{session_id}/messages/{message_index}/bank")

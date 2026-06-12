@@ -4,8 +4,8 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Node](https://img.shields.io/badge/Node-18+-green.svg)](https://nodejs.org/)
 [![React](https://img.shields.io/badge/React-19-blue.svg)](https://react.dev/)
-[![LangChain](https://img.shields.io/badge/LangChain-v1.2.7-orange.svg)](https://langchain.com/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-1.0.7-orange.svg)](https://langchain-ai.github.io/langgraph/)
+[![LangChain](https://img.shields.io/badge/LangChain-v1.3-orange.svg)](https://langchain.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-v1.2-orange.svg)](https://langchain-ai.github.io/langgraph/)
 
 
 <img width="2615" height="816" alt="Langconfig Banner" src="https://github.com/user-attachments/assets/059f5595-2a48-4fae-bab8-5760661bcbb5" />
@@ -22,23 +22,32 @@ Create custom tools using LangChain's middleware system, or use prebuilt templat
 
 When you're ready to share or deploy, export your workflow as a JSON config that anyone with LangConfig can import instantly. Or download a complete Python package—LangChain/LangGraph code, execution scripts, and a Streamlit web UI—ready to run anywhere.
 
-LangConfig includes workflow templates for research and content creation. We're actively building new features and templates to make it easy to pick up and start experimenting with agentic AI.
+LangConfig ships with 8 out-of-box workflow templates spanning research, coding, code review, privacy, and content production — including parallel multi-provider review panels, evaluator-optimizer loops with human approval gates, and deterministic PII-safe tool pipelines. We're actively building new features and templates to make it easy to pick up and start experimenting with agentic AI.
 
 ---
 
 ## Key Features
 
 - **Visual Workflow Builder** - Drag-and-drop LangGraph state graphs on an interactive canvas
+- **3D Spatial Builder** - Build the same workflows in a game-like 3D space and watch multi-agent executions animate live: glowing nodes, tool pulses along edges, orbiting subagent swarms, and a replay timeline for past runs
+- **Multi-Runtime Agents** - Run chat agents on LangGraph (default), Google ADK, or Anthropic Managed Agents (hosted sessions), selected per agent template
+- **Adaptive Thinking & Prompt Caching** - Claude agents support adaptive thinking with effort control, visible thinking summaries in chat, cached system prompts, and Anthropic server-side web search/fetch tools
 - **Custom Agent Builder** - Create specialized agents with AI-generated configurations
 - **Interactive Chat Testing** - Test agents with live streaming, tool execution visibility, and document upload
 - **RAG Knowledge Base** - Upload documents (PDF, DOCX, code) for semantic search with pgvector
-- **Multi-Model Support** - OpenAI (GPT-4o, GPT-5), Anthropic (Claude 4.5 Sonnet/Opus/Haiku), Google (Gemini 3 Pro, Gemini 2.5), DeepSeek, local models (Ollama, LM Studio)
+- **Repository Browser** - Clone git repositories read-only, browse with syntax-highlighted previews, and ingest files or folders into the knowledge base
+- **Multi-Model Support** - OpenAI (GPT-5.5, GPT-5.4 series), Anthropic (Claude Fable 5, Opus 4.8, Sonnet 4.6, Haiku 4.5), Google (Gemini 3.1 Pro, Gemini 2.5 Flash), local models (Ollama, LM Studio)
+- **Deep Agents v0.6 Support** - Build long-running agents with filesystem, todo, subagent, checkpoint, and store-backed workflows
 - **Multi-Agent Patterns** - Supervisor (hierarchical delegation) and Swarm (peer-to-peer handoffs) strategies via `langgraph-supervisor` and `langgraph-swarm`
 - **Node-Level Caching** - Per-node `CachePolicy` with configurable TTL and backend (in-memory or Redis) to skip redundant re-execution
 - **Deferred Node Execution** - Map-reduce patterns: fan out to parallel agents, then a synthesis node collects all results
 - **Dynamic Tool System** - `langgraph-bigtool` for large tool registries (15+ tools) and middleware-based tool add/remove based on workflow state
 - **Model Capability Profiles** - Auto-detect model capabilities (function calling, structured output, vision, JSON mode) to adapt agent behavior per model
 - **Custom Tool Builder** - Create specialized tools beyond built-in MCP servers
+- **Tools Hub** - Browse tool templates and manage custom tools alongside agents in the Agents area
+- **Privacy Tools** - Configure reusable PII profiles and run PII detection/redaction in workflows
+- **Local Audio Transcription** - Upload audio for local `faster-whisper` transcription and pass transcripts through downstream workflow nodes
+- **GPT Image 2 Tools** - Generate OpenAI image artifacts with supported size, quality, background, and output format controls
 - **Real-Time Monitoring** - Watch agent execution, tool calls, token usage, and costs live
 - **Artifact Gallery** - View and bulk download generated images and files from workflow executions
 - **Workflow Scheduling** - Automate workflows with cron expressions, timezone support, and concurrency controls
@@ -87,6 +96,15 @@ This automated script will:
 - Install backend Python dependencies
 - Start PostgreSQL via Docker
 - Initialize the database and seed agent templates
+- Seed **8 ready-to-run template workflows** (Deep Research, Learning Research, Research & Content Editor, Code Review Panel, Plan-Build-Verify Coder, Privacy-First Document Analyst, Competitive Intel Sweep, Content Studio Pipeline)
+
+After upgrading LangConfig, re-sync the seeded template workflows with the latest recipe definitions:
+
+```bash
+python backend/db/seed_langconfig_dev.py --refresh-templates
+```
+
+This only updates rows marked as templates (`is_template = true`) — your own workflows are never touched.
 
 **4. Add Your API Keys**
 
@@ -109,16 +127,16 @@ cd backend
 python main.py
 ```
 
-Backend runs at: `http://127.0.0.1:8765`
+Backend runs at: `http://127.0.0.1:8780`
 
 **Terminal 2 - Start Frontend:**
 ```bash
 npm run dev
 ```
 
-Frontend runs at: `http://localhost:1420`
+Frontend runs at: `http://localhost:1425`
 
-Open your browser to `http://localhost:1420`
+Open your browser to `http://localhost:1425`
 
 ### Desktop App Mode (Advanced)
 
@@ -251,8 +269,8 @@ LangConfig uses a single PostgreSQL database with pgvector for:
 1. Click **Agent Builder** from toolbar
 2. Enter name: `"Security Auditor"`
 3. Enter description: `"Reviews code for security vulnerabilities and suggests fixes"`
-4. Click **AI Generate** → GPT-4o suggests:
-   - Model: `gpt-4o` (reasoning capability)
+4. Click **AI Generate** → GPT-5.4 suggests:
+   - Model: `gpt-5.4` (reasoning capability)
    - Temperature: `0.2` (focused, deterministic)
    - Tools: `filesystem`, `grep`, `web_search`
    - System prompt: Specialized security analysis prompt
@@ -350,6 +368,10 @@ Run models locally with zero API costs:
 - `file_read` / `file_write` / `file_list` - File system operations
 - `memory_store` / `memory_recall` - Long-term memory (PostgreSQL-backed)
 - `reasoning_chain` - Break down complex tasks into logical steps
+- `calculator` - Evaluate simple arithmetic expressions
+- `pii_detect` / `pii_redact` - Detect and redact PII with optional reusable profiles
+- `audio_transcribe` - Transcribe local audio files with `faster-whisper`
+- `generate_image` - Generate GPT Image 2 image artifacts for workflow/chat output
 
 **Browser Automation** (Playwright, requires `playwright install chromium`):
 - `browser_navigate` - Navigate URLs with JavaScript rendering
@@ -360,7 +382,7 @@ Run models locally with zero API costs:
 **Custom Tool Templates** (create via UI):
 - **Notifications**: Slack, Discord (multi-channel webhooks)
 - **CMS/Publishing**: WordPress REST API, Twitter/X API
-- **Image/Video**: DALL-E 3, ChatGPT Image Gen 1.5, Sora, Imagen 3, Nano Banana (Gemini 2.5 Flash Image), Veo 3.1 Fast
+- **Image/Video**: GPT Image 2, DALL-E 3, ChatGPT Image Gen 1.5, Sora, Imagen 3, Nano Banana (Gemini 2.5 Flash Image), Veo 3.1 Fast
 - **Database**: PostgreSQL, MySQL, MongoDB queries
 - **API/Webhook**: Custom REST API calls with auth
 - **Data Transform**: JSON ↔ CSV ↔ XML ↔ YAML conversion
@@ -379,9 +401,11 @@ Run models locally with zero API costs:
 **Backend:**
 - Python 3.11+
 - FastAPI 0.115
-- LangChain 1.2.7 (full ecosystem)
-- LangGraph 1.0.7 (with checkpoint-postgres, supervisor, swarm, bigtool)
+- LangChain 1.3.x (full ecosystem)
+- LangGraph 1.2.x (with checkpoint-postgres, supervisor, swarm, bigtool)
+- Deep Agents 0.6.x
 - LlamaIndex (document indexing & RAG)
+- faster-whisper (local audio transcription)
 
 **Database:**
 - PostgreSQL 16 with pgvector
@@ -389,9 +413,9 @@ Run models locally with zero API costs:
 - langgraph-checkpoint-postgres (state persistence)
 
 **AI/ML:**
-- OpenAI (GPT-4o, GPT-4o-mini, GPT-5, o3, o3-mini, o4-mini)
-- Anthropic (Claude 4.5 Sonnet, Claude 4.5 Opus, Claude 4.5 Haiku)
-- Google (Gemini 3 Pro Preview, Gemini 2.5 Flash, Gemini 2.0 Flash)
+- OpenAI (GPT-5.5, GPT-5.4, GPT-5.4 Mini, GPT-5.4 Nano, GPT Image 2)
+- Anthropic (Claude Fable 5, Claude Opus 4.8, Claude Sonnet 4.6, Claude Haiku 4.5)
+- Google (Gemini 3.1 Pro Preview, Gemini 2.5 Flash, Gemini 2.5 Flash Lite)
 - DeepSeek (DeepSeek Chat, DeepSeek Reasoner)
 - Local models via Ollama/LM Studio
 - Sentence Transformers (embeddings)
@@ -447,7 +471,7 @@ File watchers support recursive directory monitoring.
 taskkill /F /IM node.exe
 
 # macOS/Linux
-lsof -ti:1420 | xargs kill -9
+lsof -ti:1425 | xargs kill -9
 ```
 
 ### PostgreSQL Connection Failed

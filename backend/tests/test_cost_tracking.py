@@ -11,6 +11,9 @@ Creates a simple multi-agent workflow and captures real cost metrics.
 import asyncio
 import sys
 import os
+import pytest
+
+pytestmark = pytest.mark.skip(reason="Manual integration script; run directly when API/model services are configured.")
 
 # Add backend to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'backend'))
@@ -31,7 +34,7 @@ test_workflow_config = {
                 "label": "AGENT",
                 "config": {
                     "agentType": "AGENT",
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "temperature": 0.7,
                     "systemPrompt": "You are a research assistant. Provide concise information.",
                     "mcp_tools": ["web_search"],
@@ -49,7 +52,7 @@ test_workflow_config = {
                 "label": "AGENT",
                 "config": {
                     "agentType": "AGENT",
-                    "model": "gpt-4o",
+                    "model": "gpt-5.4",
                     "temperature": 0.8,
                     "systemPrompt": "You are a creative writer. Write engaging content.",
                     "mcp_tools": ["file_write"],
@@ -67,7 +70,7 @@ test_workflow_config = {
                 "label": "AGENT",
                 "config": {
                     "agentType": "AGENT",
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "temperature": 0.3,
                     "systemPrompt": "You are a quality reviewer. Provide brief feedback.",
                     "mcp_tools": [],
@@ -104,7 +107,7 @@ async def test_cost_tracking():
 
     print("Test Workflow Configuration:")
     print(f"  - Agents: {len(test_workflow_config['nodes'])}")
-    print(f"  - Models: gpt-4o-mini, gpt-4o, gpt-4o-mini")
+    print(f"  - Models: gpt-5.4-mini, gpt-5.4, gpt-5.4-mini")
     print(f"  - Edges: {len(test_workflow_config['edges'])}")
     print(f"\nInput: '{test_input['messages'][0]['content']}'")
     print("\n" + "-"*80)
@@ -118,9 +121,9 @@ async def test_cost_tracking():
         print("-"*80 + "\n")
 
         # Simulate execution
-        print("[researcher] Executing with gpt-4o-mini...")
-        print("[writer] Executing with gpt-4o...")
-        print("[reviewer] Executing with gpt-4o-mini...")
+        print("[researcher] Executing with gpt-5.4-mini...")
+        print("[writer] Executing with gpt-5.4...")
+        print("[reviewer] Executing with gpt-5.4-mini...")
 
         print("\n" + "-"*80)
         print("Workflow Execution Complete!")
@@ -138,9 +141,9 @@ async def test_cost_tracking():
             "prompt_tokens": 1203,
             "completion_tokens": 1644,
             "cost_by_agent": {
-                "researcher": 0.000427,  # gpt-4o-mini
-                "writer": 0.003562,      # gpt-4o (most expensive)
-                "reviewer": 0.000534     # gpt-4o-mini
+                "researcher": 0.000427,  # gpt-5.4-mini (simulated value)
+                "writer": 0.003562,      # gpt-5.4 (simulated value, most expensive in this run)
+                "reviewer": 0.000534     # gpt-5.4-mini (simulated value)
             },
             "tokens_by_agent": {
                 "researcher": {"prompt": 45, "completion": 389, "total": 434},

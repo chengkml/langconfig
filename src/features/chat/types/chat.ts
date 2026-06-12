@@ -11,23 +11,41 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
+  banked?: boolean;
+  /** Model reasoning (Anthropic adaptive thinking summary) — separate from content */
+  thinking?: string;
   /** Structured content blocks from tool results (multimodal support) */
   content_blocks?: ContentBlock[];
   /** Artifacts for UI display only (not sent to LLM) */
   artifacts?: ContentBlock[];
   /** Whether the message contains multimodal content */
   has_multimodal?: boolean;
+  /** Tool calls made while producing this message (session-local; not persisted) */
+  tool_calls?: ChatToolCallRecord[];
+}
+
+/** A tool invocation surfaced in the chat message flow. */
+export interface ChatToolCallRecord {
+  tool_name: string;
+  status: 'running' | 'completed' | 'error';
+  input?: any;
+  output?: any;
+  error?: string;
+  timestamp: string;
 }
 
 export interface ChatSession {
   session_id: string;
   agent_id: number;
+  project_id?: number | null;
   agent_name: string;
   is_active: boolean;
   message_count: number;
   last_message_preview: string | null;
   created_at: string;
   updated_at: string;
+  /** Execution runtime backing this session ('langgraph' default, 'google_adk', ...) */
+  runtime?: string;
 }
 
 export interface SessionMetrics {
@@ -81,7 +99,7 @@ export interface DeepAgent {
 }
 
 export interface ChatStreamEvent {
-  type: 'chunk' | 'complete' | 'error' | 'tool_start' | 'tool_end' | 'tool_artifact' | 'custom_event';
+  type: 'chunk' | 'thinking' | 'complete' | 'error' | 'tool_start' | 'tool_end' | 'tool_artifact' | 'custom_event';
   content?: string;
   message?: string;
   tool_name?: string;
@@ -125,13 +143,26 @@ export interface ChatContextState {
   hitlEnabled: boolean;
 }
 
+export interface CompletedExecutionSnapshot {
+  events: any[];
+  prompt: string | null;
+  metrics: any;
+  completedAt: string;
+  taskId?: number | null;
+}
+
 export interface ChatContextValue extends ChatContextState {
   openChat: (agentId?: number) => void;
   closeChat: () => void;
   startSession: (agentId: number) => Promise<string>;
   switchSession: (sessionId: string) => void;
+  clearCurrentSession: () => void;
   endSession: (sessionId: string) => Promise<void>;
+  deleteSession: (sessionId: string) => Promise<void>;
   setSelectedAgent: (agentId: number | null) => void;
   toggleHitl: () => void;
   refreshSessions: () => Promise<void>;
+  getCompletedExecutions: (key: string) => CompletedExecutionSnapshot[];
+  appendCompletedExecution: (key: string, snapshot: CompletedExecutionSnapshot) => void;
+  clearCompletedExecutions: (key: string) => void;
 }

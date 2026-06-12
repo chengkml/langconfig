@@ -87,6 +87,33 @@ TOOL_NAME_MAP = {
     "sequential_thinking": "reasoning_chain",
     "thinking": "reasoning_chain",
     "reasoning": "reasoning_chain",
+    "calculator": "calculator",
+    "calculate": "calculator",
+
+    # Privacy/audio/image tools
+    "pii": "pii_redact",
+    "redact": "pii_redact",
+    "anonymize": "pii_redact",
+    "pii_redact": "pii_redact",
+    "pii_detect": "pii_detect",
+    "detect_pii": "pii_detect",
+    "pii_scan": "pii_detect",
+    "transcribe": "audio_transcribe",
+    "stt": "audio_transcribe",
+    "speech_to_text": "audio_transcribe",
+    "audio_transcribe": "audio_transcribe",
+    "generate_image": "generate_image",
+    "image_generation": "generate_image",
+
+    # Network/utility tools
+    "http_request": "http_request",
+    "http": "http_request",
+    "fetch_api": "http_request",
+    "api_request": "http_request",
+    "get_current_time": "get_current_time",
+    "current_time": "get_current_time",
+    "datetime": "get_current_time",
+    "time": "get_current_time",
 }
 
 
@@ -1244,6 +1271,48 @@ Note: This is a reasoning framework. The agent should fill in the actual analysi
     return reasoning_template
 
 
+@tool
+def calculator(expression: str) -> str:
+    """
+    Evaluate a simple arithmetic expression.
+
+    Supports numbers, parentheses, and basic arithmetic operators. This is
+    intentionally small and does not execute names, function calls, or imports.
+    """
+    import ast
+    import operator
+
+    operators = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.FloorDiv: operator.floordiv,
+        ast.Mod: operator.mod,
+        ast.Pow: operator.pow,
+        ast.USub: operator.neg,
+        ast.UAdd: operator.pos,
+    }
+
+    def eval_node(node):
+        if isinstance(node, ast.Expression):
+            return eval_node(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in operators:
+            return operators[type(node.op)](eval_node(node.left), eval_node(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in operators:
+            return operators[type(node.op)](eval_node(node.operand))
+        raise ValueError("Only arithmetic expressions are supported")
+
+    try:
+        parsed = ast.parse(expression, mode="eval")
+        result = eval_node(parsed)
+        return str(result)
+    except Exception as e:
+        return f"Error calculating expression: {e}"
+
+
 # =============================================================================
 # Subagent Delegation Tools
 # =============================================================================
@@ -1301,6 +1370,252 @@ configured, this task will be executed by the main agent."""
 
 
 # =============================================================================
+# Image Generation Tool
+# =============================================================================
+
+@tool
+async def generate_image(
+    prompt: str,
+    size: str = "auto",
+    quality: str = "auto",
+    background: str = "auto",
+    output_format: str = "png",
+) -> str:
+    """
+    Generate an image with OpenAI GPT Image 2 and surface it as a UI artifact.
+
+    Args:
+        prompt: Detailed image generation prompt.
+        size: Output size. Use auto, 1024x1024, 1536x1024, or 1024x1536.
+        quality: Output quality. Use auto, low, medium, or high.
+        background: Background handling. Use auto, transparent, or opaque.
+        output_format: Image format. Use png, jpeg, or webp.
+    """
+    api_key = os.getenv("OPENAI_API_KEY") or ""
+    if not api_key:
+        return "Error: OpenAI API key is required. Set OPENAI_API_KEY in backend/.env."
+
+    valid_sizes = {"auto", "1024x1024", "1536x1024", "1024x1536"}
+    valid_quality = {"auto", "low", "medium", "high"}
+    valid_background = {"auto", "transparent", "opaque"}
+    valid_formats = {"png", "jpeg", "webp"}
+
+    if size not in valid_sizes:
+        return f"Error: size must be one of: {', '.join(sorted(valid_sizes))}"
+    if quality not in valid_quality:
+        return f"Error: quality must be one of: {', '.join(sorted(valid_quality))}"
+    if background not in valid_background:
+        return f"Error: background must be one of: {', '.join(sorted(valid_background))}"
+    if output_format not in valid_formats:
+        return f"Error: output_format must be one of: {', '.join(sorted(valid_formats))}"
+
+    payload = {
+        "model": "gpt-image-2",
+        "prompt": prompt,
+        "size": size,
+        "quality": quality,
+        "background": background,
+        "output_format": output_format,
+        # NOTE: no "response_format" — gpt-image models return b64_json
+        # unconditionally and reject the parameter with a 400 error.
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/images/generations",
+                json=payload,
+                headers=headers,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        image = (data.get("data") or [{}])[0]
+        b64_data = image.get("b64_json")
+        if not b64_data:
+            return "Error: GPT Image 2 did not return image data."
+
+        mime_type = f"image/{output_format}"
+        from core.tools.factory import store_artifact
+
+        store_artifact({
+            "type": "image",
+            "data": b64_data,
+            "mimeType": mime_type,
+        })
+
+        size_kb = len(b64_data) * 3 // 4 // 1024
+        return f"Image generated successfully ({size_kb}KB). The image is available in the run artifacts."
+    except httpx.HTTPStatusError as e:
+        try:
+            error_msg = e.response.json().get("error", {}).get("message", str(e))
+        except Exception:
+            error_msg = str(e)
+        logger.error(f"GPT Image 2 API error: {error_msg}")
+        return f"Error: {error_msg}"
+    except httpx.TimeoutException:
+        return "Error: GPT Image 2 request timed out."
+    except Exception as e:
+        logger.error(f"GPT Image 2 generation failed: {e}", exc_info=True)
+        return f"Error generating image: {e}"
+
+
+# =============================================================================
+# Network/Utility Tools
+# =============================================================================
+
+_HTTP_ALLOWED_SCHEMES = {"http", "https"}
+_HTTP_ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
+
+
+def _get_http_client(timeout: float) -> httpx.AsyncClient:
+    """
+    Create the AsyncClient used by http_request.
+
+    Module-level factory so tests can monkeypatch it with an
+    httpx.MockTransport-backed client instead of hitting the network.
+    """
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+
+
+@tool
+def get_current_time(timezone: str = "UTC") -> str:
+    """
+    Get the current date and time in a given timezone.
+
+    Use this whenever temporal accuracy matters (today's date, day of week,
+    scheduling, or resolving relative dates like "yesterday"). Never guess
+    the current date.
+
+    Args:
+        timezone: IANA timezone name, e.g. "UTC", "America/New_York",
+            "Europe/London", "Asia/Tokyo" (default: "UTC")
+
+    Returns:
+        ISO-8601 timestamp with UTC offset, plus weekday and timezone name,
+        e.g. "2026-06-10T09:15:00-04:00 (Wednesday, America/New_York)"
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    try:
+        tz = ZoneInfo(timezone)
+    except Exception:
+        return (
+            f"Error: unknown timezone '{timezone}'. Provide an IANA timezone "
+            f"name in Region/City format, e.g. 'UTC', 'America/New_York', "
+            f"'Europe/London', or 'Asia/Tokyo'."
+        )
+
+    now = datetime.now(tz)
+    return f"{now.isoformat(timespec='seconds')} ({now.strftime('%A')}, {timezone})"
+
+
+@tool
+async def http_request(
+    url: str,
+    method: str = "GET",
+    headers: Optional[Dict[str, str]] = None,
+    body: Optional[str] = None,
+    timeout: int = 30,
+    max_chars: int = 50000,
+) -> str:
+    """
+    Make an HTTP request to an API endpoint and return the response.
+
+    Use this for calling REST/JSON APIs with full control over method,
+    headers, and body. For reading regular web pages, prefer web_fetch.
+
+    Args:
+        url: Full URL including scheme. Only http:// and https:// are allowed.
+        method: HTTP method - one of GET, POST, PUT, PATCH, DELETE, HEAD
+            (default: GET)
+        headers: Optional request headers, e.g. {"Authorization": "Bearer ..."}
+        body: Optional request body as a string (serialize JSON yourself and
+            set a Content-Type header). Not allowed with GET or HEAD.
+        timeout: Request timeout in seconds (default: 30)
+        max_chars: Maximum characters of response body to return; longer
+            bodies are truncated with a notice (default: 50000)
+
+    Returns:
+        Status line, key response headers, and the response body.
+        JSON responses are pretty-printed. Errors are returned as strings.
+    """
+    import json as _json
+    from urllib.parse import urlparse
+
+    scheme = urlparse(url).scheme.lower()
+    if scheme not in _HTTP_ALLOWED_SCHEMES:
+        return (
+            f"Error: unsupported URL scheme '{scheme or '(none)'}'. "
+            f"Only http:// and https:// URLs are allowed."
+        )
+
+    method = method.upper()
+    if method not in _HTTP_ALLOWED_METHODS:
+        return (
+            f"Error: unsupported HTTP method '{method}'. "
+            f"Allowed methods: {', '.join(sorted(_HTTP_ALLOWED_METHODS))}."
+        )
+
+    if body and method in ("GET", "HEAD"):
+        return (
+            f"Error: a request body is not allowed with {method}. "
+            f"Use POST, PUT, or PATCH to send a body, or drop the body."
+        )
+
+    try:
+        logger.info(f"HTTP {method} {url}")
+        async with _get_http_client(timeout) as client:
+            response = await client.request(
+                method, url, headers=headers, content=body
+            )
+    except httpx.TimeoutException:
+        return f"Error: request to {url} timed out after {timeout}s"
+    except httpx.HTTPError as e:
+        return f"Error making request to {url}: {e}"
+    except Exception as e:
+        logger.error(f"http_request failed for {url}: {e}")
+        return f"Error: {e}"
+
+    content_type = response.headers.get("content-type", "")
+    text = response.text
+
+    if "json" in content_type:
+        try:
+            text = _json.dumps(response.json(), indent=2, ensure_ascii=False)
+        except Exception:
+            pass  # Not valid JSON despite the content-type; return as-is
+
+    truncated = len(text) > max_chars
+    if truncated:
+        text = text[:max_chars]
+
+    header_lines = []
+    for key in ("content-type", "content-length", "date", "server"):
+        value = response.headers.get(key)
+        if value:
+            header_lines.append(f"{key}: {value}")
+
+    result = f"HTTP {response.status_code} {response.reason_phrase}".rstrip()
+    if header_lines:
+        result += "\n" + "\n".join(header_lines)
+    result += f"\n\n{text}"
+    if truncated:
+        result += (
+            f"\n\n[Response truncated: showing first {max_chars:,} characters "
+            f"of the response body]"
+        )
+
+    return result
+
+
+# =============================================================================
 # Tool Loading Functions
 # =============================================================================
 
@@ -1348,12 +1663,41 @@ def load_native_tools(tool_names: List[str]) -> List[StructuredTool]:
         "memory_recall": memory_recall,
         # Reasoning tools
         "reasoning_chain": reasoning_chain,
+        "calculator": calculator,
         # Subagent delegation tools
         "task": task,
         "delegate": task,  # Alias for task
+        # Image generation
+        "generate_image": generate_image,
+        # Network/utility tools
+        "http_request": http_request,
+        "fetch_api": http_request,  # Alias for http_request
+        "get_current_time": get_current_time,
+        "current_time": get_current_time,  # Alias for get_current_time
+        "datetime": get_current_time,  # Alias for get_current_time
         # Note: Playwright tools are loaded separately via get_playwright_tools()
         # because they require async initialization
     }
+
+    try:
+        from tools.pii_tool import pii_redact, pii_detect
+        available_tools["pii_redact"] = pii_redact
+        available_tools["pii_detect"] = pii_detect
+        available_tools["pii"] = pii_redact
+        available_tools["redact"] = pii_redact
+        available_tools["anonymize"] = pii_redact
+        available_tools["detect_pii"] = pii_detect
+    except Exception as e:
+        logger.warning(f"PII tools unavailable: {e}")
+
+    try:
+        from tools.audio_transcribe_tool import audio_transcribe
+        available_tools["audio_transcribe"] = audio_transcribe
+        available_tools["transcribe"] = audio_transcribe
+        available_tools["stt"] = audio_transcribe
+        available_tools["speech_to_text"] = audio_transcribe
+    except Exception as e:
+        logger.warning(f"Audio transcription tool unavailable: {e}")
 
     tools = []
 
@@ -1414,8 +1758,17 @@ def get_available_tool_names() -> List[str]:
         "memory_recall",
         # Reasoning tools
         "reasoning_chain",
+        "calculator",
         # Subagent delegation tools
         "task",
+        # Privacy/audio/image tools
+        "pii_redact",
+        "pii_detect",
+        "audio_transcribe",
+        "generate_image",
+        # Network/utility tools
+        "http_request",
+        "get_current_time",
     ]
 
 

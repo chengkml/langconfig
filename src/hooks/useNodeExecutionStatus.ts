@@ -276,6 +276,19 @@ export function useNodeExecutionStatus(
           }
           break;
 
+        case 'node_started':
+          updatedStatus = {
+            ...updatedStatus,
+            state: 'running',
+            thinking: '',
+            thinkingPreview: '',
+            startTime: currentStatus.startTime || event.timestamp,
+            latestEvent: event,
+            progress: 10,
+            activeTool: event.data?.agent_label?.includes('Tool') ? `${event.data.agent_label}...` : updatedStatus.activeTool,
+          };
+          break;
+
         case 'on_tool_start':
         case 'tool_start':  // Support both event types
           // Tool execution starting
@@ -470,7 +483,10 @@ export function useNodeExecutionStatus(
           break;
 
         case 'on_chain_end':
-          // Node completed successfully - check if this is the final workflow completion
+          // Only the final workflow completion may transition state here. Inner LangGraph
+          // sub-chains fire on_chain_end constantly mid-stream; treating those as node
+          // completion froze timers and stopped the pulse before the node actually finished.
+          // Node-level completion is signaled by the explicit node_completed event below.
           const isWorkflowCompletion = event.data?.name === 'workflow_execution';
 
           if (isWorkflowCompletion) {
@@ -481,24 +497,54 @@ export function useNodeExecutionStatus(
               thinkingPreview: '',
               progress: 0,
             };
+            if (streamingRateRef.current[nodeLabel]) {
+              streamingRateRef.current[nodeLabel].buffer = '';
+            }
+          } else {
+            updatedStatus = {
+              ...updatedStatus,
+              latestEvent: event,
+            };
+          }
+          break;
+
+        case 'node_completed':
+          if (event.data?.status === 'error') {
+            updatedStatus = {
+              ...updatedStatus,
+              state: 'error',
+              error: event.data?.error || 'Node failed',
+              thinking: '',
+              thinkingPreview: '',
+              endTime: event.timestamp,
+              latestEvent: event,
+              activeTool: undefined,
+              progress: 0,
+            };
           } else {
             updatedStatus = {
               ...updatedStatus,
               state: 'completed',
-              thinking: '', // Clear thinking on completion
+              thinking: '',
               thinkingPreview: '',
               endTime: event.timestamp,
-              durationMs: updatedStatus.startTime
-                ? new Date(event.timestamp!).getTime() - new Date(updatedStatus.startTime).getTime()
-                : undefined,
+              durationMs:
+                event.data?.duration_ms ??
+                (updatedStatus.startTime && event.timestamp
+                  ? new Date(event.timestamp).getTime() - new Date(updatedStatus.startTime).getTime()
+                  : undefined),
               latestEvent: event,
               activeTool: undefined,
               progress: 100,
-              _streamAccumulator: '', // Clear accumulated stream
+              _streamAccumulator: '',
+              tokenCost: event.data?.tokenCost
+                ? {
+                    ...event.data.tokenCost,
+                    costString: event.data.tokenCost.costString || updatedStatus.tokenCost?.costString || '$0.00',
+                  }
+                : updatedStatus.tokenCost,
             };
           }
-
-          // Also clear streaming buffer for this node
           if (streamingRateRef.current[nodeLabel]) {
             streamingRateRef.current[nodeLabel].buffer = '';
           }
@@ -545,7 +591,7 @@ export function useNodeExecutionStatus(
             const totalTokens = tokenUsage.total_tokens || (promptTokens + completionTokens);
 
             // Get model name from event data or use default
-            const modelName = event.data?.model || event.data?.model_name || 'gpt-4o';
+            const modelName = event.data?.model || event.data?.model_name || 'gpt-5.4';
 
             // ACCUMULATE token costs instead of replacing them
             const existingCost = updatedStatus.tokenCost || { promptTokens: 0, completionTokens: 0, totalTokens: 0, costString: '$0.00' };

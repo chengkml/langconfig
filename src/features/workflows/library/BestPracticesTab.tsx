@@ -401,7 +401,7 @@ def test_full_workflow():
 
     # Use cheaper model for testing
     test_agent = Agent(
-        model="gpt-4o-mini",  # Cheaper for testing
+        model="gpt-5.4-mini",  # Cheaper for testing
         temperature=0,  # Deterministic
         tools=["calculator"]
     )
@@ -494,7 +494,7 @@ class Settings(BaseSettings):
     # Model selection by environment
     model: str = os.getenv(
         "LLM_MODEL",
-        "gpt-4o-mini" if os.getenv("ENV") == "dev" else "gpt-4o"
+        "gpt-5.4-mini" if os.getenv("ENV") == "dev" else "gpt-5.4"
     )
 
     # Rate limiting
@@ -573,11 +573,11 @@ from typing import Dict
 class CostTracker:
     """Track LLM costs across runs."""
 
-    # Pricing per 1M tokens (as of 2024)
+    # Pricing per 1M tokens (as of 2026)
     PRICING: Dict[str, Dict[str, float]] = {
-        "gpt-4o": {"input": 5.00, "output": 15.00},
-        "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-        "claude-3-5-sonnet": {"input": 3.00, "output": 15.00}
+        "gpt-5.4": {"input": 2.50, "output": 15.00},
+        "gpt-5.4-mini": {"input": 0.75, "output": 4.50},
+        "claude-sonnet-4-6": {"input": 3.00, "output": 15.00}
     }
 
     total_cost: float = 0.0
@@ -608,7 +608,7 @@ class CostTracker:
 
 # Usage
 cost_tracker = CostTracker()
-cost = cost_tracker.track_run("gpt-4o", input_tokens=1000, output_tokens=500)`}</pre>
+cost = cost_tracker.track_run("gpt-5.4", input_tokens=1000, output_tokens=500)`}</pre>
                 </div>
               </div>
             )}
@@ -650,7 +650,7 @@ client = Anthropic()
 
 # Mark blocks for caching with cache_control
 response = client.messages.create(
-    model="claude-3-5-sonnet-20241022",
+    model="claude-sonnet-4-6",
     max_tokens=1024,
     system=[
         {
@@ -719,7 +719,7 @@ results = await execute_tools_parallel(tool_calls)
 
 # Enable streaming for better UX
 llm = ChatOpenAI(
-    model_name="gpt-4o",
+    model_name="gpt-5.4",
     streaming=True,
     callbacks=[StreamingStdOutCallbackHandler()]
 )
@@ -870,7 +870,7 @@ class LoggingMiddleware(RunnableBinding):
             <div>
               <h4 className="font-semibold mb-1" style={{ color: 'var(--color-text-primary)' }}>Development</h4>
               <ul className="space-y-1" style={{ color: 'var(--color-text-muted)' }}>
-                <li>• Use gpt-4o-mini for testing</li>
+                <li>• Use gpt-5.4-mini for testing</li>
                 <li>• Set temperature=0 for determinism</li>
                 <li>• Mock LLMs in unit tests</li>
                 <li>• Version your prompts</li>

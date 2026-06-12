@@ -13,8 +13,9 @@ No blueprints, no strategies - just execute the workflow definition stored in th
 import asyncio
 import json
 import logging
+import time
 from typing import Dict, Any, Optional, List, Annotated, TypedDict
-from datetime import datetime
+from datetime import datetime, timezone
 import operator
 
 from langgraph.graph import StateGraph, START, END
@@ -65,6 +66,33 @@ logger = logging.getLogger(__name__)
 def pick_last(left: Any, right: Any) -> Any:
     """Reducer that picks the latest (right) value if it's not None."""
     return right if right is not None else left
+
+
+def detect_pending_interrupt(state_snapshot: Any) -> Optional[Dict[str, Any]]:
+    """
+    Return the first pending interrupt payload from a LangGraph StateSnapshot.
+
+    A graph paused on a node-internal interrupt() (e.g. APPROVAL_NODE) has a
+    non-empty `.next` and at least one task carrying `.interrupts`. Non-dict
+    interrupt values are wrapped as {"value": ...} so callers always get a dict.
+
+    Args:
+        state_snapshot: Result of `await compiled_graph.aget_state(config)` (or None)
+
+    Returns:
+        The interrupt payload dict, or None if the graph is not paused
+    """
+    if state_snapshot is None or not getattr(state_snapshot, "next", None):
+        return None
+
+    for graph_task in getattr(state_snapshot, "tasks", ()) or ():
+        for pending_interrupt in getattr(graph_task, "interrupts", ()) or ():
+            value = getattr(pending_interrupt, "value", None)
+            if isinstance(value, dict):
+                return value
+            return {"value": value}
+
+    return None
 
 
 class SimpleWorkflowState(TypedDict):
@@ -128,6 +156,13 @@ class SimpleWorkflowState(TypedDict):
     # Critic output for conditional routing
     critic_output: Annotated[Optional[str], pick_last]
 
+    # Deterministic tool-node handoff state
+    last_tool_output: Annotated[Optional[str], pick_last]
+    tool_result: Annotated[Optional[Any], pick_last]
+    current_directive: Annotated[Optional[str], pick_last]
+    handoff_summary: Annotated[Optional[str], pick_last]
+    audio_file_path: Annotated[Optional[str], pick_last]
+
 
 class SimpleWorkflowExecutor:
     """
@@ -139,6 +174,46 @@ class SimpleWorkflowExecutor:
 
     def __init__(self):
         self.node_metadata = {}  # Will be populated during graph building
+        self._has_approval_node = False  # Set during graph building (HITL checkpointer auto-enable)
+
+    def _persist_task_hitl_state(self, task_id: int, state: Optional[Dict[str, Any]]) -> None:
+        """
+        Persist (or clear) HITL pause state on the Task row.
+
+        Stored under execution_logs["state"] (the Task model has no dedicated
+        configuration column). The /api/hitl status and approve/reject endpoints
+        read this to locate executions paused at an APPROVAL_NODE.
+
+        Args:
+            task_id: Task ID to update
+            state: State dict (e.g. {"workflow_status": "AWAITING_APPROVAL", ...})
+                   or None to remove the state marker entirely
+        """
+        from db.database import SessionLocal
+        from models.core import Task
+
+        db = SessionLocal()
+        try:
+            task = db.query(Task).filter(Task.id == task_id).first()
+            if not task:
+                logger.warning(f"Cannot persist HITL state - task {task_id} not found")
+                return
+
+            # Reassign the JSON column so SQLAlchemy detects the change
+            logs = dict(task.execution_logs or {})
+            if state is None:
+                logs.pop("state", None)
+            else:
+                logs["state"] = state
+            task.execution_logs = logs
+            task.updated_at = datetime.utcnow()
+            db.commit()
+            logger.info(f"Persisted HITL state for task {task_id}: {state.get('workflow_status') if state else 'cleared'}")
+        except Exception as e:
+            logger.error(f"Failed to persist HITL state for task {task_id}: {e}")
+            db.rollback()
+        finally:
+            db.close()
 
     async def execute_workflow(
         self,
@@ -265,10 +340,19 @@ class SimpleWorkflowExecutor:
                     logger.warning(f"Failed to build swarm graph, falling back to standard: {e}")
 
             # 2. Get checkpointer for state persistence
-            # Only use checkpointer if explicitly enabled in input_data
-            checkpointer_enabled = input_data.get("checkpointer_enabled", False)
+            # Enabled explicitly via input_data, or automatically when the workflow
+            # contains an APPROVAL_NODE (interrupt()-based HITL requires a checkpointer)
+            has_approval_node = getattr(self, "_has_approval_node", False)
+            checkpointer_enabled = input_data.get("checkpointer_enabled", False) or has_approval_node
             from core.workflows.checkpointing.manager import get_checkpointer
             checkpointer = get_checkpointer() if checkpointer_enabled else None
+
+            if has_approval_node and checkpointer is None:
+                logger.error(
+                    f"Workflow '{workflow.name}' contains an APPROVAL_NODE but no checkpointer "
+                    f"is available - HITL pause/resume disabled (approval will be informational only). "
+                    f"Ensure setup_checkpointing() ran during application startup."
+                )
 
             # 3. Compile the graph with checkpointer and optional cache backend
             # Official patterns (supervisor/swarm) return pre-compiled graphs
@@ -281,10 +365,11 @@ class SimpleWorkflowExecutor:
                     logger.info(f"[CACHE] Cache backend enabled for workflow '{workflow.name}'")
 
                 if checkpointer:
+                    # HITL pausing is driven by node-internal interrupt() calls
+                    # (APPROVAL_NODE), so no interrupt_before configuration is needed
                     logger.info(f"Compiling workflow '{workflow.name}' with checkpointing enabled")
                     compiled_graph = graph.compile(
                         checkpointer=checkpointer,
-                        interrupt_before=[],  # Can add APPROVAL_NODE here for HITL
                         **compile_kwargs,
                     )
                 else:
@@ -347,6 +432,11 @@ class SimpleWorkflowExecutor:
                 "custom_output_path": getattr(workflow, 'custom_output_path', None),
                 # Deferred node support: parallel branch outputs merged here
                 "branch_results": {},
+                "last_tool_output": None,
+                "tool_result": None,
+                "current_directive": query,
+                "handoff_summary": None,
+                "audio_file_path": input_data.get("audio_file_path"),
             }
 
             # 5. Create callback handler for detailed agent logging
@@ -394,6 +484,37 @@ class SimpleWorkflowExecutor:
                     "timestamp": datetime.utcnow().isoformat()
                 }
             })
+
+            # HITL resume: when resume_command is present, re-enter the paused graph
+            # with Command(resume=...) instead of seeding fresh initial state.
+            # The checkpointer restores state from the same thread_id config.
+            stream_input: Any = initial_state
+            resume_command = input_data.get("resume_command")
+            if resume_command:
+                if checkpointer is None or not INTERRUPT_AVAILABLE:
+                    error_msg = (
+                        f"Cannot resume workflow '{workflow.name}' (task {task_id}): "
+                        f"checkpointer unavailable or langgraph.types.Command not importable"
+                    )
+                    logger.error(error_msg)
+                    await event_bus.publish(channel, {
+                        "type": "error",
+                        "data": {
+                            "error": error_msg,
+                            "error_type": "ResumeUnavailable",
+                            "workflow_id": workflow.id,
+                            "task_id": task_id,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    })
+                    raise ValueError(error_msg)
+
+                decision = "reject" if resume_command.get("decision") == "reject" else "approve"
+                stream_input = Command(resume=decision)
+                logger.info(
+                    f"Resuming workflow '{workflow.name}' (task {task_id}) from APPROVAL_NODE "
+                    f"with decision='{decision}'"
+                )
 
             # ========================================================================
             # CRITICAL: WORKFLOW EXECUTION LOOP - DO NOT MODIFY WITHOUT TESTING
@@ -451,7 +572,7 @@ class SimpleWorkflowExecutor:
             # This is the official LangGraph approach for real-time subagent monitoring.
             # ========================================================================
             async for event in compiled_graph.astream_events(
-                initial_state,
+                stream_input,
                 config=config,
                 version="v2",
                 include_subgraphs=True  # Stream events from nested subgraphs (subagents)
@@ -1020,6 +1141,76 @@ class SimpleWorkflowExecutor:
                     except Exception as e:
                         logger.error(f"Error processing tool call reasoning: {e}")
 
+            # ========================================================================
+            # HITL PAUSE DETECTION
+            # ========================================================================
+            # If the graph stopped on a pending interrupt() (APPROVAL_NODE), the
+            # stream exits naturally but the workflow is NOT complete - it's paused
+            # in the checkpointer waiting for /api/hitl approve/reject to resume it.
+            # ========================================================================
+            if checkpointer is not None and not use_official_pattern:
+                state_snapshot = None
+                try:
+                    state_snapshot = await compiled_graph.aget_state(config)
+                except Exception as e:
+                    logger.error(f"Failed to read checkpoint state for HITL pause detection: {e}")
+
+                interrupt_payload = detect_pending_interrupt(state_snapshot)
+                if interrupt_payload is not None:
+                    thread_id = config["configurable"]["thread_id"]
+                    logger.info(
+                        f"Workflow '{workflow.name}' (task {task_id}) paused at APPROVAL_NODE - "
+                        f"awaiting human approval via /api/hitl"
+                    )
+
+                    approval_event = {
+                        **interrupt_payload,
+                        "workflow_id": workflow.id,
+                        "task_id": task_id,
+                        "thread_id": thread_id,
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                    await event_bus.publish(channel, {
+                        "type": "approval_required",
+                        "data": approval_event
+                    })
+
+                    # Persist pause state on the Task row so /api/hitl/{id}/status and
+                    # the approve/reject endpoints can locate the paused execution
+                    self._persist_task_hitl_state(task_id, {
+                        "workflow_status": "AWAITING_APPROVAL",
+                        "approval_context": approval_event
+                    })
+
+                    # Flush pending event persists and clean up execution context
+                    await callback_handler.flush_pending_persists(timeout=10.0)
+                    clear_execution_context()
+
+                    return {
+                        "status": "awaiting_approval",
+                        "workflow_id": workflow.id,
+                        "task_id": task_id,
+                        "thread_id": thread_id,
+                        "approval_context": approval_event,
+                        "formatted_output": {
+                            "formatted_content": (
+                                "Workflow paused at an approval gate - awaiting human "
+                                "approval before continuing."
+                            ),
+                            "output_type": "plain_text"
+                        },
+                        "messages": []
+                    }
+
+                # Resume run finished without a new pending interrupt - clear the
+                # AWAITING_APPROVAL marker so the task no longer reads as paused
+                if resume_command:
+                    self._persist_task_hitl_state(task_id, {
+                        "workflow_status": "APPROVAL_RESOLVED",
+                        "decision": resume_command.get("decision"),
+                        "resolved_at": datetime.utcnow().isoformat()
+                    })
+
             # If no state captured (shouldn't happen but defensive), fall back to initial state
             if final_state is None:
                 logger.warning("No final state from astream_events - using initial state")
@@ -1096,32 +1287,13 @@ class SimpleWorkflowExecutor:
                     workflow_summary["tokens_by_agent"][agent_name]["calls"] += 1
                     workflow_summary["total_tokens"] += tokens
 
-                # Cost estimation based on current model pricing (Updated December 2025)
-                cost_per_1m_tokens = {
-                    # OpenAI Reasoning Models
-                    "o3": 20.00,
-                    "o3-mini": 4.00,
-                    "o4-mini": 3.00,
-                    # OpenAI GPT-4o Series
-                    "gpt-4o": 2.50,
-                    "gpt-4o-mini": 0.15,
-                    # Anthropic Claude 4.5
-                    "claude-opus-4-5": 15.00,
-                    "claude-sonnet-4-5": 3.00,
-                    "claude-sonnet-4-5-20250929": 3.00,
-                    "claude-haiku-4-5": 1.00,
-                    # Google Gemini 3
-                    "gemini-3-pro-preview": 2.00,
-                    # Google Gemini 2.5
-                    "gemini-2.5-flash": 0.075,
-                    # Google Gemini 2.0
-                    "gemini-2.0-flash": 0.075,
-                    "default": 1.00
-                }
+                # Cost estimation via the model registry (single pricing source).
+                # Stored model strings may carry provider prefixes; the registry
+                # resolves those (exact then longest-substring match) internally.
+                from core.models.registry import model_registry
 
                 for agent_name, data in workflow_summary["tokens_by_agent"].items():
-                    model = data["model"].lower()
-                    rate = next((v for k, v in cost_per_1m_tokens.items() if k in model), cost_per_1m_tokens["default"])
+                    rate = model_registry.get_blended_cost_per_1m(data["model"], default=1.00)
                     agent_cost = (data["tokens"] / 1_000_000) * rate
                     data["estimated_cost_usd"] = round(agent_cost, 4)
                     workflow_summary["total_cost_usd"] += agent_cost
@@ -1402,6 +1574,9 @@ class SimpleWorkflowExecutor:
         entry_point_override = None  # Track if user specified START_NODE
         terminal_nodes = []  # Track END_NODEs for special handling
 
+        # Reset HITL detection - set True below if any APPROVAL_NODE is present
+        self._has_approval_node = False
+
         # Build node metadata map for callback handler (for proper event labeling)
         node_metadata = {}
 
@@ -1419,6 +1594,11 @@ class SimpleWorkflowExecutor:
             # 1. Try node data label (saved by frontend when user creates node)
             # 2. Fallback to type with underscores replaced by spaces and title cased
             agent_label = node_data.get("label") or agent_type.replace('_', ' ').title()
+
+            # APPROVAL_NODE requires a checkpointer for interrupt()-based HITL pause/resume
+            if agent_type == 'APPROVAL_NODE':
+                self._has_approval_node = True
+                logger.info(f"Detected APPROVAL_NODE: {node_id} - checkpointer will be auto-enabled for HITL")
 
             # Skip non-executable control nodes (START and END are handled specially)
             if agent_type not in ['START_NODE', 'END_NODE']:
@@ -1724,6 +1904,22 @@ class SimpleWorkflowExecutor:
             logger.info(f"[{display_name}] Executing agent (node: {node_id})")
 
             try:
+                try:
+                    from services.event_bus import get_event_bus
+                    event_bus = get_event_bus()
+                    channel = f"workflow:{state.get('workflow_id')}"
+                    await event_bus.publish(channel, {
+                        "type": "node_started",
+                        "data": {
+                            "node_id": node_id,
+                            "agent_label": display_name,
+                            "agent_type": agent_type,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    })
+                except Exception as event_error:
+                    logger.warning(f"[{display_name}] Failed to emit node_started: {event_error}")
+
                 # Get agent configuration from node data
                 agent_config = node_data.get("config", {})
                 logger.info(f"[{display_name}] RAW node_data keys: {list(node_data.keys())}")
@@ -1732,7 +1928,7 @@ class SimpleWorkflowExecutor:
                 # Get model with fallback - treat "none" as missing (control nodes use this)
                 model = agent_config.get("model")
                 if not model or model == "none":
-                    model = "gpt-4o-mini"  # Default fallback
+                    model = "gpt-5.4-mini"  # Default fallback
                 temperature = agent_config.get("temperature", 0.7)
                 system_prompt = agent_config.get("system_prompt", f"You are a {agent_type} agent.")
 
@@ -2066,7 +2262,7 @@ When your work is complete, deliver the final result and END."""
                     try:
                         from services.context_window_manager import ContextWindowManager, ContextStrategy
 
-                        model_name = agent_config.get("model", "gpt-4o")
+                        model_name = agent_config.get("model", "gpt-5.4")
 
                         # Get strategy from multiple possible sources (in priority order):
                         # 1. guardrails.compaction_strategy (DeepAgent UI)
@@ -2371,14 +2567,14 @@ When your work is complete, deliver the final result and END."""
 
                     # Calculate estimated cost if we have token data
                     if token_usage:
-                        try:
-                            from lib.model_pricing import get_model_cost
-                            cost = get_model_cost(model, token_usage['promptTokens'], token_usage['completionTokens'])
-                            token_usage['costString'] = f"${cost:.6f}"
-                        except Exception:
-                            # Fallback cost estimation
-                            estimated_cost = (token_usage['promptTokens'] * 0.000003) + (token_usage['completionTokens'] * 0.000015)
-                            token_usage['costString'] = f"${estimated_cost:.6f}"
+                        from core.models.registry import model_registry
+                        cost = model_registry.get_model_cost(
+                            model, token_usage['promptTokens'], token_usage['completionTokens']
+                        )
+                        if cost is None:
+                            # Unknown model - rough Sonnet-class fallback
+                            cost = (token_usage['promptTokens'] * 0.000003) + (token_usage['completionTokens'] * 0.000015)
+                        token_usage['costString'] = f"${cost:.6f}"
 
                     # Emit node_completed event with all metrics
                     try:
@@ -2447,6 +2643,23 @@ When your work is complete, deliver the final result and END."""
                     return update
                 else:
                     logger.warning(f"[Node: {node_id}] No messages to process")
+                    # Still emit node_completed so the frontend finalizes this node
+                    # (state transitions rely on this event, not on on_chain_end).
+                    try:
+                        from services.event_bus import get_event_bus
+                        event_bus = get_event_bus()
+                        channel = f"workflow:{state.get('workflow_id')}"
+                        await event_bus.publish(channel, {
+                            "type": "node_completed",
+                            "data": {
+                                "node_id": node_id,
+                                "agent_label": display_name,
+                                "model": model,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            },
+                        })
+                    except Exception as event_error:
+                        logger.warning(f"[{display_name}] Failed to emit node_completed event: {event_error}")
                     return {
                         "messages": [],  # Always include messages key for reducer
                         "current_node": node_id,
@@ -2456,6 +2669,22 @@ When your work is complete, deliver the final result and END."""
 
             except Exception as e:
                 logger.error(f"[Node: {node_id}] Execution failed: {e}", exc_info=True)
+                try:
+                    from services.event_bus import get_event_bus
+                    event_bus = get_event_bus()
+                    channel = f"workflow:{state.get('workflow_id')}"
+                    await event_bus.publish(channel, {
+                        "type": "node_completed",
+                        "data": {
+                            "node_id": node_id,
+                            "agent_label": display_name,
+                            "status": "error",
+                            "error": str(e)[:500],
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    })
+                except Exception as event_error:
+                    logger.warning(f"[{display_name}] Failed to emit error node_completed: {event_error}")
                 return {
                     "messages": [],  # Always include messages key for reducer
                     "error_message": str(e),
@@ -2477,7 +2706,52 @@ When your work is complete, deliver the final result and END."""
 
         Control nodes handle workflow coordination, state management, and output formatting.
         """
+        display_label = node_data.get("data", {}).get("label") or node_data.get("label") or control_type
+
         async def control_node_executor(state: SimpleWorkflowState) -> Dict[str, Any]:
+            """Execute a control node, emitting node lifecycle events around the body."""
+            start_time = time.perf_counter()
+            try:
+                from services.event_bus import get_event_bus
+                event_bus = get_event_bus()
+                channel = f"workflow:{state.get('workflow_id')}"
+                await event_bus.publish(channel, {
+                    "type": "node_started",
+                    "data": {
+                        "node_id": node_id,
+                        "agent_label": display_label,
+                        "agent_type": control_type,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                })
+            except Exception as event_error:
+                logger.warning(f"[{display_label}] Failed to emit node_started: {event_error}")
+
+            result = await _execute_control_node(state)
+
+            try:
+                from services.event_bus import get_event_bus
+                event_bus = get_event_bus()
+                channel = f"workflow:{state.get('workflow_id')}"
+                completion_data = {
+                    "node_id": node_id,
+                    "agent_label": display_label,
+                    "duration_ms": int((time.perf_counter() - start_time) * 1000),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+                if result.get("error_message"):
+                    completion_data["status"] = "error"
+                    completion_data["error"] = str(result["error_message"])[:500]
+                await event_bus.publish(channel, {
+                    "type": "node_completed",
+                    "data": completion_data,
+                })
+            except Exception as event_error:
+                logger.warning(f"[{display_label}] Failed to emit node_completed: {event_error}")
+
+            return result
+
+        async def _execute_control_node(state: SimpleWorkflowState) -> Dict[str, Any]:
             """Execute a control node."""
             logger.info(f"[Control Node: {node_id}] Executing {control_type}")
 
@@ -2758,7 +3032,12 @@ When your work is complete, deliver the final result and END."""
             from core.workflows.nodes import execute_tool_node
 
             # Get tool configuration from node_data
-            node_config = node_data.get("config", {})
+            node_config = dict(node_data.get("config", {}))
+            node_config.setdefault("node_id", node_id)
+            node_config.setdefault("label", node_data.get("data", {}).get("label") or node_config.get("tool_id") or "Tool Node")
+            for key in ("tool_type", "tool_id", "tool_params"):
+                if key not in node_config and key in node_data:
+                    node_config[key] = node_data[key]
 
             logger.info(f"[TOOL_NODE {node_id}] Executing with config: {node_config}")
 

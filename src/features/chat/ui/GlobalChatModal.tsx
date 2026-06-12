@@ -24,7 +24,9 @@ export default function GlobalChatModal() {
     hitlEnabled,
     startSession,
     switchSession,
+    clearCurrentSession,
     endSession,
+    refreshSessions,
     sessions
   } = useChat();
 
@@ -39,9 +41,18 @@ export default function GlobalChatModal() {
     error: sessionError,
     addMessage,
     updateLastMessage,
+    deleteMessage,
     clearHistory,
     setError: setSessionError
   } = useChatSession(currentSessionId);
+
+  // Get current session details
+  const currentSession = sessions.find((s: ChatSession) => s.session_id === currentSessionId);
+  const agentName = currentSession?.agent_name || 'Agent';
+
+  // HITL is a LangGraph capability: never send enable_hitl=true for sessions
+  // backed by other runtimes (e.g. Google ADK).
+  const hitlSupported = (currentSession?.runtime ?? 'langgraph') === 'langgraph';
 
   // Streaming hook
   const {
@@ -49,7 +60,7 @@ export default function GlobalChatModal() {
     isStreaming,
     error: streamingError,
     clearError: clearStreamingError
-  } = useChatStreaming(currentSessionId, hitlEnabled);
+  } = useChatStreaming(currentSessionId, hitlEnabled && hitlSupported);
 
   // Metrics hook
   const {
@@ -59,10 +70,6 @@ export default function GlobalChatModal() {
     isLoading: isLoadingMetrics,
     refresh: refreshMetrics
   } = useChatMetrics(currentSessionId);
-
-  // Get current session details
-  const currentSession = sessions.find((s: ChatSession) => s.session_id === currentSessionId);
-  const agentName = currentSession?.agent_name || 'Agent';
 
   // Handle ESC key
   useEffect(() => {
@@ -173,6 +180,13 @@ export default function GlobalChatModal() {
     }
   };
 
+  const handleDeleteMessage = async (messageIndex: number) => {
+    await deleteMessage(messageIndex);
+    clearCurrentSession();
+    await refreshSessions();
+    setSessionError('Message deleted. Start a new session to continue chatting.');
+  };
+
   const error = sessionError || streamingError;
   const clearError = () => {
     setSessionError(null);
@@ -183,27 +197,27 @@ export default function GlobalChatModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
       onClick={handleBackdropClick}
     >
       <div
         ref={modalRef}
-        className="rounded-xl shadow-2xl w-full max-w-7xl h-[90vh] flex flex-col overflow-hidden"
+        className="flex h-[90vh] w-full max-w-7xl flex-col overflow-hidden border-2 shadow-[8px_8px_0_var(--color-border-dark)]"
         style={{
-          backgroundColor: 'white',
-          border: '1px solid var(--color-border-dark)',
+          backgroundColor: 'var(--color-background-light)',
+          borderColor: 'var(--color-border-dark)',
         }}
       >
         {/* Header with Title */}
         <div
-          className="px-6 py-3 border-b"
+          className="border-b-2 px-6 py-3"
           style={{
-            backgroundColor: 'var(--color-primary)',
-            color: 'white',
+            backgroundColor: 'var(--color-panel-dark)',
+            color: 'var(--color-text-primary)',
             borderColor: 'var(--color-border-dark)',
           }}
         >
-          <h2 className="text-lg font-semibold">Agent Chat Interface</h2>
+          <h2 className="text-lg font-semibold">Agent Chat</h2>
         </div>
 
         {/* Header */}
@@ -229,6 +243,7 @@ export default function GlobalChatModal() {
             error={error}
             onSendMessage={handleSendMessage}
             onClearError={clearError}
+            onDeleteMessage={handleDeleteMessage}
             disabled={!currentSessionId}
             sessionId={currentSessionId}
             activeToolCalls={activeToolCalls}

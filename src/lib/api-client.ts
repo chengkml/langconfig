@@ -121,9 +121,13 @@ class APIClient {
 
     switch (status) {
       case 409: {
-        // Conflict - Optimistic locking failure
-        const message = errorData?.message || 'Resource was modified by another user';
+        // Conflict — optimistic locking failure or domain conflict (e.g.
+        // duplicate resource, busy resource). FastAPI puts the reason in
+        // `detail`, so fall back to it before the generic locking message.
         const detail = (errorData as ConflictError)?.detail;
+        const message =
+          errorData?.message ||
+          (typeof detail === 'string' ? detail : 'Resource was modified by another user');
         this.showToast(message, 'warning');
         throw new ConflictErrorClass(message, detail);
       }
@@ -219,7 +223,14 @@ class APIClient {
   }
 
   // Workflows
-  async listWorkflows(config?: { project_id?: number; skip?: number; limit?: number; signal?: AbortSignal }) {
+  async listWorkflows(config?: {
+    project_id?: number;
+    skip?: number;
+    limit?: number;
+    is_template?: boolean;
+    template_category?: string;
+    signal?: AbortSignal;
+  }) {
     const { signal, ...params } = config || {};
     return this.client.get('/api/workflows/', { params: Object.keys(params).length ? params : undefined, signal });
   }
@@ -236,6 +247,11 @@ class APIClient {
     schema_output_config?: object;
     output_schema?: string;
     blueprint?: object;
+    custom_output_path?: string;
+    is_template?: boolean;
+    template_category?: string;
+    template_icon?: string;
+    template_tags?: string[];
   }) {
     return this.client.post('/api/workflows/', data);
   }
@@ -246,6 +262,23 @@ class APIClient {
 
   async deleteWorkflow(id: number) {
     return this.client.delete(`/api/workflows/${id}`);
+  }
+
+  async forkWorkflow(id: number, data?: {
+    name?: string;
+    project_id?: number;
+    as_template?: boolean;
+  }) {
+    return this.client.post(`/api/workflows/${id}/fork`, data || {});
+  }
+
+  async updateWorkflowTemplateStatus(id: number, data: {
+    is_template: boolean;
+    category?: string;
+    icon?: string;
+    tags?: string[];
+  }) {
+    return this.client.patch(`/api/workflows/${id}/template`, data);
   }
 
   async getWorkflowCode(id: number) {
@@ -494,6 +527,48 @@ class APIClient {
     return this.client.get(`/api/rag/projects/${projectId}/storage-stats`);
   }
 
+  // =============================================================================
+  // Git Repositories (Knowledge)
+  // =============================================================================
+
+  async listRepositories(projectId?: number, config?: { signal?: AbortSignal }) {
+    return this.client.get('/api/repositories/', {
+      params: projectId != null ? { project_id: projectId } : undefined,
+      signal: config?.signal,
+    });
+  }
+
+  async createRepository(data: { clone_url: string; branch?: string; project_id: number }) {
+    return this.client.post('/api/repositories/', data);
+  }
+
+  async getRepository(id: number) {
+    return this.client.get(`/api/repositories/${id}`);
+  }
+
+  async syncRepository(id: number) {
+    return this.client.post(`/api/repositories/${id}/sync`);
+  }
+
+  async deleteRepository(id: number) {
+    return this.client.delete(`/api/repositories/${id}`);
+  }
+
+  async listRepositoryFiles(id: number, config?: { signal?: AbortSignal }) {
+    return this.client.get(`/api/repositories/${id}/files`, { signal: config?.signal });
+  }
+
+  async getRepositoryFile(id: number, path: string, config?: { signal?: AbortSignal }) {
+    return this.client.get(`/api/repositories/${id}/file`, {
+      params: { path },
+      signal: config?.signal,
+    });
+  }
+
+  async ingestRepositoryPath(id: number, path: string) {
+    return this.client.post(`/api/repositories/${id}/ingest`, { path });
+  }
+
   // Settings
   async getSettings() {
     return this.client.get('/api/settings/');
@@ -575,6 +650,37 @@ class APIClient {
   async validateLocalModelConfig(base_url: string, api_key?: string) {
     return this.client.post('/api/local-models/validate-config', null, {
       params: { base_url, api_key }
+    });
+  }
+
+  async listModelServers() {
+    return this.client.get('/api/model-servers/');
+  }
+
+  async createModelServer(data: {
+    name: string;
+    base_url: string;
+    provider: string;
+    api_key?: string;
+    auto_sync?: boolean;
+    sync_interval_seconds?: number;
+  }) {
+    return this.client.post('/api/model-servers/', data);
+  }
+
+  async deleteModelServer(serverId: string, hardDelete: boolean = false) {
+    return this.client.delete(`/api/model-servers/${serverId}`, {
+      params: { hard_delete: hardDelete }
+    });
+  }
+
+  async syncModelServer(serverId: string) {
+    return this.client.post(`/api/model-servers/${serverId}/sync`);
+  }
+
+  async discoverModelsPreview(base_url: string, provider: string = 'custom', api_key?: string) {
+    return this.client.post('/api/model-servers/discover', null, {
+      params: { base_url, provider, api_key }
     });
   }
 
@@ -777,16 +883,28 @@ class APIClient {
   }
 
   // Chat
-  async startChatSession(agentId: number) {
-    return this.client.post('/api/chat/start', { agent_id: agentId });
+  async startChatSession(agentId: number, projectId?: number | null) {
+    return this.client.post('/api/chat/start', {
+      agent_id: agentId,
+      project_id: projectId ?? undefined,
+    });
   }
 
   async endChatSession(sessionId: string) {
     return this.client.post(`/api/chat/${sessionId}/end`);
   }
 
-  async getChatSessions() {
-    return this.client.get('/api/chat/sessions');
+  async deleteChatSession(sessionId: string) {
+    return this.client.delete(`/api/chat/${sessionId}`);
+  }
+
+  async getChatSessions(params?: { agent_id?: number; project_id?: number | null; active_only?: boolean; limit?: number }) {
+    return this.client.get('/api/chat/sessions', {
+      params: {
+        ...params,
+        project_id: params?.project_id ?? undefined,
+      },
+    });
   }
 
   async getChatHistory(sessionId: string) {
@@ -795,6 +913,10 @@ class APIClient {
 
   async getChatMetrics(sessionId: string) {
     return this.client.get(`/api/chat/${sessionId}/metrics`);
+  }
+
+  async deleteChatMessage(sessionId: string, messageIndex: number) {
+    return this.client.delete(`/api/chat/${sessionId}/messages/${messageIndex}`);
   }
 
   // Action Presets

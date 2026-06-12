@@ -20,9 +20,9 @@ Based on Domain Specialization (Chapter 7), Advanced RAG (Chapter 14), and Activ
 from core.agents.templates import AgentTemplate, AgentCategory
 
 # Use current model types
-MODEL_REASONING = "claude-sonnet-4-5-20250929"
-MODEL_FAST = "gpt-4o-mini"
-MODEL_BALANCED = "gpt-5"
+MODEL_REASONING = "claude-sonnet-4-6"
+MODEL_FAST = "gpt-5.4-mini"
+MODEL_BALANCED = "gpt-5.4"
 
 # =============================================================================
 # Stage 1: Internal Knowledge Review (Memory Retrieval)
@@ -128,7 +128,7 @@ SPECIALIZED_RESEARCHER = AgentTemplate(
     description="Conducts targeted external research using specialized sources (ArXiv, GitHub, technical docs).",
     category=AgentCategory.RESEARCH,
     model=MODEL_FAST,
-    fallback_models=[MODEL_BALANCED, "gemini-2.0-flash"],
+    fallback_models=[MODEL_BALANCED, "gemini-2.5-flash"],
     temperature=0.3,
     system_prompt="""ROLE: Technical Research Specialist.
 

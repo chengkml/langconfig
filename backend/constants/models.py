@@ -5,33 +5,33 @@
 
 """
 Model constants for LangConfig
-Updated December 16, 2025
+Updated June 10, 2026
 """
 from enum import Enum
 
 
 class ModelChoice(str, Enum):
-    """Available AI models - Updated December 16, 2025"""
+    """Selectable AI models - updated June 10, 2026."""
 
-    # OpenAI - GPT-5 Series (Current)
-    GPT_5_2 = "gpt-5.2"  # Latest flagship model
-    GPT_5_1 = "gpt-5.1"
-    GPT_4O = "gpt-4o"
-    GPT_4O_MINI = "gpt-4o-mini"  # Lean/fast model
+    # OpenAI - GPT-5 frontier series
+    GPT_5_5 = "gpt-5.5"
+    GPT_5_4 = "gpt-5.4"
+    GPT_5_4_MINI = "gpt-5.4-mini"
+    GPT_5_4_NANO = "gpt-5.4-nano"
 
-    # Anthropic - Claude 4.5 (Current)
-    CLAUDE_OPUS_4_5 = "claude-opus-4-5"
-    CLAUDE_SONNET_4_5 = "claude-sonnet-4-5"
+    # Anthropic - Claude current generation
+    CLAUDE_FABLE_5 = "claude-fable-5"  # Frontier tier above Opus; no temperature/top_p, thinking always on
+    CLAUDE_OPUS_4_8 = "claude-opus-4-8"
+    CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
 
-    # Google - Gemini 3 (Current)
-    GEMINI_3_PRO = "gemini-3-pro-preview"
+    # Google - Gemini 3.1 (current; gemini-3-pro-preview was shut down 2026-03-09)
+    GEMINI_3_1_PRO = "gemini-3.1-pro-preview"
 
-    # Google - Gemini 2.5
-    GEMINI_2_FLASH = "gemini-2.0-flash"
+    # Google - Gemini 2.5 (gemini-2.0-flash was shut down 2026-06-01)
     GEMINI_25_FLASH = "gemini-2.5-flash"
     GEMINI_25_FLASH_LITE = "gemini-2.5-flash-lite"
 
 
 # Default model
-DEFAULT_MODEL = ModelChoice.GPT_4O
+DEFAULT_MODEL = ModelChoice.GPT_5_4

@@ -147,24 +147,29 @@ class DeepAgentFactory:
             vector_store=vector_store
         )
 
-        # Initialize middleware instances with instrumentation
+        # Initialize middleware instances (custom/extra middleware only - the
+        # deepagents harness supplies TodoList/Filesystem/SubAgent/Summarization)
         middleware_instances = []
 
-        # Import instrumentation utilities
-        from services.deepagents_instrumentation import (
-            instrument_deepagents_middleware,
-            create_todo_tracker
-        )
-
-        # Initialize FilesystemMiddleware if enabled
+        # Resolve filesystem workspace backend if enabled
         filesystem_config = next(
             (m for m in config.middleware if m.type == MiddlewareType.FILESYSTEM),
             None
         )
+        # DO NOT manually append TodoListMiddleware or FilesystemMiddleware here.
+        # deepagents 0.6.x adds both to every deep agent by default, and
+        # create_agent asserts middleware uniqueness - a manual instance raises
+        # "Please remove duplicate middleware instances", which silently kicked
+        # EVERY chat agent onto the checkpointer-less fallback path (no
+        # conversation memory). Filesystem customization goes through the
+        # supported `backend=` parameter instead (resolved below).
+        fs_backend = None
         if filesystem_config and filesystem_config.enabled:
             try:
-                from deepagents.middleware.filesystem import FilesystemMiddleware
-                from deepagents.memory.backends import FilesystemBackend
+                try:
+                    from deepagents.memory.backends import FilesystemBackend
+                except ImportError:
+                    from deepagents.backends import FilesystemBackend
                 from services.workspace_manager import get_workspace_manager
 
                 # Get task workspace for file storage (with custom path override if configured)
@@ -177,16 +182,23 @@ class DeepAgentFactory:
                 )
 
                 # Use FilesystemBackend with task workspace as root (files persist to disk)
-                fs_backend = FilesystemBackend(root=str(workspace_path))
-                fs_middleware = FilesystemMiddleware(backend=fs_backend)
-                instrumented_fs = instrument_deepagents_middleware(
-                    fs_middleware,
-                    callback_handler=callback_handler
-                )
-                middleware_instances.append(instrumented_fs)
-                logger.info(f"FilesystemMiddleware initialized with workspace: {workspace_path}")
+                try:
+                    fs_backend = FilesystemBackend(root=str(workspace_path))
+                except TypeError:
+                    fs_backend = FilesystemBackend(root_dir=str(workspace_path))
+                logger.info(f"Filesystem backend resolved to workspace: {workspace_path}")
             except ImportError as e:
-                logger.warning(f"FilesystemMiddleware not available: {e}")
+                logger.warning(f"FilesystemBackend not available: {e}")
+
+        todo_config = next(
+            (m for m in config.middleware if m.type == MiddlewareType.TODO_LIST),
+            None
+        )
+        if todo_config and todo_config.config:
+            logger.info(
+                "TodoListMiddleware is provided by the deepagents harness; "
+                "custom todo config is not forwarded (built-in defaults apply)"
+            )
 
         # NOTE: SubAgentMiddleware is NOT manually created here.
         # The deepagents library automatically creates SubAgentMiddleware (with the `task` tool)
@@ -197,7 +209,7 @@ class DeepAgentFactory:
             logger.info(f"SubAgents configured ({len(subagents_config)}) - will be auto-initialized by create_deep_agent")
 
         # Get PostgreSQL checkpointer for conversation persistence
-        from core.workflows.checkpointing.manager import get_checkpointer
+        from core.workflows.checkpointing.manager import get_checkpointer, get_store
         checkpointer = get_checkpointer()
 
         if checkpointer:
@@ -215,16 +227,85 @@ class DeepAgentFactory:
                 "interrupts": config.guardrails.interrupts
             }
 
+        # Resolve the model: for Claude models, construct the ChatAnthropic
+        # instance via AgentFactory._create_llm so provider features configured
+        # on the agent (adaptive thinking, effort, prompt caching) are honored.
+        # Other providers keep the string path (resolved by deepagents via
+        # init_chat_model with provider profiles).
+        model_for_agent: Any = config.model
+        if config.model.startswith("claude"):
+            llm_config: Dict[str, Any] = {
+                "streaming": True,
+                "enable_thinking": config.enable_thinking,
+                "thinking_display": config.thinking_display,
+                "enable_prompt_caching": config.enable_prompt_caching,
+            }
+            # reasoning_effort defaults to LOW for the Gemini path; only
+            # forward it to Anthropic when it was explicitly configured.
+            if "reasoning_effort" in config.model_fields_set and config.reasoning_effort:
+                llm_config["reasoning_effort"] = config.reasoning_effort
+            try:
+                model_for_agent = await AgentFactory._create_llm(
+                    config.model, config.temperature, config.max_tokens, llm_config
+                )
+            except Exception as model_err:
+                logger.warning(
+                    f"Failed to construct configured Claude model instance "
+                    f"({model_err}); falling back to model string"
+                )
+                model_for_agent = config.model
+
+        # Anthropic server-side tools (web_search / web_fetch) - passed to
+        # create_deep_agent as raw dicts (forwarded to the API unchanged).
+        # Kept out of `all_tools` so the returned tool list stays BaseTool-only.
+        server_tool_dicts: List[Dict[str, Any]] = []
+        if config.model.startswith("claude") and config.anthropic_server_tools:
+            from core.agents.factory import resolve_anthropic_server_tools
+            server_tool_dicts, all_tools = resolve_anthropic_server_tools(
+                config.anthropic_server_tools, all_tools
+            )
+            if server_tool_dicts:
+                logger.info(
+                    f"Anthropic server tools enabled: "
+                    f"{[t['name'] for t in server_tool_dicts]}"
+                )
+
         # Create DeepAgent with all components
         try:
+            agent_label = f"deep_agent_task_{task_id}"
             agent_kwargs = {
-                "model": config.model,
-                "tools": all_tools,
+                "model": model_for_agent,
+                "tools": all_tools + server_tool_dicts,
                 "system_prompt": config.system_prompt,
                 "middleware": middleware_instances if middleware_instances else None,
                 "subagents": subagents_config if subagents_config else None,
                 "checkpointer": checkpointer,
+                "name": getattr(config, 'agent_name', None) or agent_label,
+                "debug": getattr(config, 'debug', False),
             }
+
+            # Custom filesystem root (task workspace) via the supported param;
+            # deepagents builds its own FilesystemMiddleware around it.
+            if fs_backend is not None:
+                agent_kwargs["backend"] = fs_backend
+
+            try:
+                store = get_store()
+                if store:
+                    agent_kwargs["store"] = store
+            except Exception:
+                pass
+
+            interrupt_on = getattr(config, 'interrupt_on', {})
+            if interrupt_on:
+                agent_kwargs["interrupt_on"] = interrupt_on
+
+            if getattr(config, 'enable_cache', False):
+                try:
+                    from langgraph.cache.memory import InMemoryCache
+                    agent_kwargs["cache"] = InMemoryCache()
+                except ImportError:
+                    logger.debug("InMemoryCache not available")
 
             # Debug logging for subagent configuration
             if subagents_config:
@@ -257,8 +338,13 @@ class DeepAgentFactory:
             return agent, all_tools, callbacks
 
         except Exception as e:
-            logger.error(f"Error creating DeepAgent: {e}")
-            logger.info("Falling back to regular agent")
+            logger.error(f"Error creating DeepAgent: {e}", exc_info=True)
+            logger.critical(
+                "Falling back to regular AgentFactory - the fallback agent has "
+                "NO checkpointer, so chat sessions will have NO conversation "
+                "memory and HITL resume will not work. Fix the error above; do "
+                "not let this fallback become the steady state."
+            )
             return await DeepAgentFactory._fallback_to_regular_agent(
                 config, project_id, task_id, context, mcp_manager, vector_store
             )
@@ -590,7 +676,16 @@ class DeepAgentFactory:
             "custom_tools": config.custom_tools,
             "enable_memory": False,
             "enable_rag": False,
+            # Anthropic feature passthrough
+            "enable_thinking": config.enable_thinking,
+            "thinking_display": config.thinking_display,
+            "enable_prompt_caching": config.enable_prompt_caching,
+            "anthropic_server_tools": config.anthropic_server_tools,
         }
+        # reasoning_effort defaults to LOW for the Gemini path; only forward
+        # when explicitly configured so Claude models don't get effort="low".
+        if "reasoning_effort" in config.model_fields_set and config.reasoning_effort:
+            agent_config["reasoning_effort"] = config.reasoning_effort
 
         # Use existing AgentFactory
         return await AgentFactory.create_agent(
@@ -631,7 +726,7 @@ class DeepAgentFactory:
         default_tools = FILESYSTEM_TOOLS + ["web_search"]
 
         config = {
-            "model": "claude-sonnet-4-5-20250929",
+            "model": "claude-sonnet-4-6",
             "temperature": 0.7,
             "system_prompt": "You are a helpful AI assistant with planning and research capabilities.",
             "tools": [],

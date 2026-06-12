@@ -8,6 +8,11 @@
 import { useState } from 'react';
 import { Activity, Zap, Users, Database, ChevronDown, ChevronRight, DollarSign, FileText, AlertTriangle } from 'lucide-react';
 import type { SessionMetrics, ToolCall, SubAgentActivity } from '../types/chat';
+import { Surface } from '@/components/ui/Surface';
+import { ProgressBar } from '@/components/ui/ProgressBar';
+
+/** Context size (tokens) past which the panel warns about a large context. */
+const CONTEXT_WARNING_THRESHOLD = 30000;
 
 interface MetricsPanelProps {
   metrics: SessionMetrics;
@@ -29,22 +34,25 @@ export default function MetricsPanel({
   const [toolCallsExpanded, setToolCallsExpanded] = useState(false);
   const [subagentsExpanded, setSubagentsExpanded] = useState(false);
 
+  const contextTokens = metrics?.context_tokens ?? 0;
+  const contextWarning = contextTokens > CONTEXT_WARNING_THRESHOLD;
+
   return (
     <div
-      className="w-80 border-l overflow-y-auto"
+      className="w-80 overflow-y-auto border-l-2"
       style={{
-        borderColor: 'var(--color-border-dark)',
+        borderColor: 'var(--border-strong)',
         backgroundColor: 'var(--color-background-light)',
       }}
     >
       {/* Current Agent */}
       {sessionId && agentName && (
         <div
-          className="p-6 border-b"
-          style={{ borderColor: 'var(--color-border-dark)' }}
+          className="border-b-2 p-6"
+          style={{ borderColor: 'var(--border-strong)' }}
         >
           <div
-            className="text-xs uppercase tracking-wider font-medium mb-2"
+            className="font-mono text-xs uppercase tracking-[0.12em] font-medium mb-2"
             style={{ color: 'var(--color-text-muted)' }}
           >
             Active Agent
@@ -55,19 +63,13 @@ export default function MetricsPanel({
           >
             {agentName}
           </div>
-          <div
-            className="text-sm mt-3 leading-relaxed"
-            style={{ color: 'var(--color-text-muted)' }}
-          >
-            Test and converse with your agent in real-time with streaming responses and session persistence.
-          </div>
         </div>
       )}
 
       {/* Session Metrics */}
       <div className="p-6">
         <div
-          className="text-xs uppercase tracking-wider font-medium mb-4"
+          className="font-mono text-xs uppercase tracking-[0.12em] font-medium mb-4"
           style={{ color: 'var(--color-text-muted)' }}
         >
           Session Metrics
@@ -102,16 +104,24 @@ export default function MetricsPanel({
             {metrics?.context_tokens !== undefined && (
               <MetricCard
                 icon={
-                  (metrics.context_tokens ?? 0) > 30000 ? (
+                  contextWarning ? (
                     <AlertTriangle className="w-5 h-5" />
                   ) : (
                     <Database className="w-5 h-5" />
                   )
                 }
                 label="Context Size"
-                value={`${(metrics.context_tokens ?? 0).toLocaleString()} tokens`}
-                warning={(metrics.context_tokens ?? 0) > 30000}
-              />
+                value={`${contextTokens.toLocaleString()} tokens`}
+                warning={contextWarning}
+              >
+                <ProgressBar
+                  value={contextTokens}
+                  max={CONTEXT_WARNING_THRESHOLD}
+                  tone={contextWarning ? 'warning' : 'info'}
+                  height={6}
+                  className="mt-2"
+                />
+              </MetricCard>
             )}
             <MetricCard
               icon={<Zap className="w-5 h-5" />}
@@ -135,12 +145,12 @@ export default function MetricsPanel({
       {/* Tool Calls */}
       {toolCalls.length > 0 && (
         <div
-          className="border-t"
-          style={{ borderColor: 'var(--color-border-dark)' }}
+          className="border-t-2"
+          style={{ borderColor: 'var(--border-strong)' }}
         >
           <button
             onClick={() => setToolCallsExpanded(!toolCallsExpanded)}
-            className="w-full p-3 flex items-center justify-between hover:bg-white/50 transition-colors"
+            className="flex w-full items-center justify-between p-3 font-mono text-xs font-semibold uppercase tracking-[0.12em] transition-colors hover:bg-[var(--surface-2)]"
           >
             <div className="flex items-center gap-2">
               <Zap className="w-3.5 h-3.5" style={{ color: 'var(--color-primary)' }} />
@@ -161,14 +171,7 @@ export default function MetricsPanel({
           {toolCallsExpanded && (
             <div className="px-3 pb-3 space-y-1.5">
               {toolCalls.slice(-10).reverse().map((call, index) => (
-                <div
-                  key={index}
-                  className="p-2 rounded border"
-                  style={{
-                    backgroundColor: 'white',
-                    borderColor: 'var(--color-border-dark)',
-                  }}
-                >
+                <Surface key={index} variant="inset" className="p-2">
                   <div
                     className="font-mono text-xs font-semibold"
                     style={{ color: 'var(--color-primary)' }}
@@ -181,7 +184,7 @@ export default function MetricsPanel({
                   >
                     {new Date(call.timestamp).toLocaleTimeString()}
                   </div>
-                </div>
+                </Surface>
               ))}
             </div>
           )}
@@ -191,12 +194,12 @@ export default function MetricsPanel({
       {/* Subagent Activity */}
       {subagentActivity.length > 0 && (
         <div
-          className="border-t"
-          style={{ borderColor: 'var(--color-border-dark)' }}
+          className="border-t-2"
+          style={{ borderColor: 'var(--border-strong)' }}
         >
           <button
             onClick={() => setSubagentsExpanded(!subagentsExpanded)}
-            className="w-full p-3 flex items-center justify-between hover:bg-white/50 transition-colors"
+            className="flex w-full items-center justify-between p-3 font-mono text-xs font-semibold uppercase tracking-[0.12em] transition-colors hover:bg-[var(--surface-2)]"
           >
             <div className="flex items-center gap-2">
               <Users className="w-3.5 h-3.5" style={{ color: 'var(--color-primary)' }} />
@@ -217,14 +220,7 @@ export default function MetricsPanel({
           {subagentsExpanded && (
             <div className="px-3 pb-3 space-y-1.5">
               {subagentActivity.slice(-10).reverse().map((activity, index) => (
-                <div
-                  key={index}
-                  className="p-2 rounded border"
-                  style={{
-                    backgroundColor: 'white',
-                    borderColor: 'var(--color-border-dark)',
-                  }}
-                >
+                <Surface key={index} variant="inset" className="p-2">
                   <div
                     className="font-medium text-xs"
                     style={{ color: 'var(--color-primary)' }}
@@ -243,7 +239,7 @@ export default function MetricsPanel({
                   >
                     {new Date(activity.timestamp).toLocaleTimeString()}
                   </div>
-                </div>
+                </Surface>
               ))}
             </div>
           )}
@@ -258,43 +254,38 @@ interface MetricCardProps {
   label: string;
   value: string;
   warning?: boolean;
+  /** Optional extra content (e.g. a usage ProgressBar) rendered under the value. */
+  children?: React.ReactNode;
 }
 
-function MetricCard({ icon, label, value, warning = false }: MetricCardProps) {
+function MetricCard({ icon, label, value, warning = false, children }: MetricCardProps) {
   return (
-    <div
-      className="p-3 rounded-lg border"
-      style={{
-        backgroundColor: warning ? 'rgba(245, 158, 11, 0.05)' : 'white',
-        borderColor: warning ? 'rgba(245, 158, 11, 0.3)' : 'var(--color-border-dark)',
-      }}
-    >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div style={{ color: warning ? '#f59e0b' : 'var(--color-primary)' }}>
-            {icon}
+    <Surface variant="card-sm" tone={warning ? 'warning' : undefined} className="p-3">
+      <div className="flex items-center gap-3">
+        <div style={{ color: warning ? 'var(--color-warning)' : 'var(--color-primary)' }}>
+          {icon}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div
+            className="text-xs font-medium"
+            style={{ color: 'var(--color-text-muted)' }}
+          >
+            {label}
           </div>
-          <div>
-            <div
-              className="text-xs font-medium"
-              style={{ color: 'var(--color-text-muted)' }}
-            >
-              {label}
-            </div>
-            <div
-              className="text-lg font-bold"
-              style={{ color: warning ? '#f59e0b' : 'var(--color-text-primary)' }}
-            >
-              {value}
-            </div>
-            {warning && (
-              <div className="text-xs mt-1" style={{ color: '#f59e0b' }}>
-                Context is large - consider starting a new session
-              </div>
-            )}
+          <div
+            className="text-lg font-bold"
+            style={{ color: warning ? 'var(--color-warning)' : 'var(--color-text-primary)' }}
+          >
+            {value}
           </div>
+          {children}
+          {warning && (
+            <div className="text-xs mt-1" style={{ color: 'var(--color-warning)' }}>
+              Context is large - consider starting a new session
+            </div>
+          )}
         </div>
       </div>
-    </div>
+    </Surface>
   );
 }

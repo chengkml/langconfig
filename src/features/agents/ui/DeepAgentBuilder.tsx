@@ -28,8 +28,14 @@ import {
 } from 'lucide-react';
 import { useNotification } from '../../../hooks/useNotification';
 import { ModelSelectorInline } from '../../../components/common/ModelSelector';
+import { AVAILABLE_TOOLS } from '../data/agentTools';
 
 import apiClient from '../../../lib/api-client';
+
+// Provider-gated tools (e.g. Anthropic server-side web tools). Rendered only
+// when the selected model matches the gate; persisted into
+// `anthropic_server_tools`, NOT `native_tools`.
+const ANTHROPIC_SERVER_TOOLS = AVAILABLE_TOOLS.filter(t => t.providerGate === 'anthropic');
 
 // Type definitions
 
@@ -105,6 +111,11 @@ interface DeepAgentConfig {
   name?: string;
   description?: string;
   category?: string;
+  /**
+   * Execution runtime: 'langgraph' (default), 'google_adk' (Gemini only, no
+   * HITL), or 'anthropic_managed' (Claude only, fixed Anthropic-hosted toolset)
+   */
+  runtime?: string;
   model: string;
   temperature: number;
   max_tokens?: number;
@@ -122,6 +133,8 @@ interface DeepAgentConfig {
   include_chat_ui: boolean;
   include_docker: boolean;
   enforce_tool_constraints?: boolean;  // Enable/disable action preset enforcement
+  enable_prompt_caching?: boolean;  // Anthropic prompt caching (Claude models only)
+  anthropic_server_tools?: string[];  // Anthropic server-side tools (web_search/web_fetch)
 }
 
 // Unified AgentConfig that supports both Regular and Deep agent fields
@@ -169,7 +182,8 @@ const FILESYSTEM_TOOLS = ['ls', 'read_file', 'write_file', 'edit_file', 'glob', 
 const DEFAULT_AGENT_TOOLS = [...FILESYSTEM_TOOLS, 'web_search'];
 
 const DEFAULT_CONFIG: DeepAgentConfig = {
-  model: 'claude-sonnet-4-5-20250929',
+  runtime: 'langgraph',
+  model: 'claude-sonnet-4-6',
   temperature: 0.7,
   system_prompt: 'You are a helpful AI assistant with planning, research, and task delegation capabilities. When facing complex multi-step tasks, use the `task` tool to delegate specialized work to subagents.',
   tools: [],
@@ -216,7 +230,9 @@ const DEFAULT_CONFIG: DeepAgentConfig = {
   export_format: 'standalone',
   include_chat_ui: true,
   include_docker: false,
-  enforce_tool_constraints: false  // Disabled by default - users can enable for production safety
+  enforce_tool_constraints: false,  // Disabled by default - users can enable for production safety
+  enable_prompt_caching: false,
+  anthropic_server_tools: []
 };
 
 // Native tools registry with DeepAgents standard naming
@@ -433,6 +449,25 @@ export default function DeepAgentBuilder({
     setConfig(prev => ({ ...prev, [key]: value }));
   };
 
+  // Runtime gating: Google ADK only executes Gemini models (and has no HITL).
+  const isGoogleAdkRuntime = (config.runtime || 'langgraph') === 'google_adk';
+  // Anthropic Managed only executes Claude models, with Anthropic's fixed
+  // hosted toolset (our tool picker does not apply).
+  const isAnthropicManagedRuntime = (config.runtime || 'langgraph') === 'anthropic_managed';
+
+  const handleRuntimeChange = (runtime: string) => {
+    setConfig(prev => {
+      // Switching runtime forces a compatible model family.
+      let model = prev.model;
+      if (runtime === 'google_adk' && !model.startsWith('gemini')) {
+        model = 'gemini-2.5-flash';
+      } else if (runtime === 'anthropic_managed' && !model.startsWith('claude')) {
+        model = 'claude-sonnet-4-6';
+      }
+      return { ...prev, runtime, model };
+    });
+  };
+
   const toggleMiddleware = (index: number) => {
     const newMiddleware = [...config.middleware];
     newMiddleware[index].enabled = !newMiddleware[index].enabled;
@@ -481,6 +516,18 @@ export default function DeepAgentBuilder({
         ? prev.native_tools.filter(t => t !== toolId)
         : [...prev.native_tools, toolId]
     }));
+  }, []);
+
+  const toggleServerTool = useCallback((toolId: string) => {
+    setConfig(prev => {
+      const current = prev.anthropic_server_tools || [];
+      return {
+        ...prev,
+        anthropic_server_tools: current.includes(toolId)
+          ? current.filter(t => t !== toolId)
+          : [...current, toolId]
+      };
+    });
   }, []);
 
   const toggleCustomTool = useCallback((toolId: string) => {
@@ -791,15 +838,47 @@ export default function DeepAgentBuilder({
 
               <div>
                 <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-2 uppercase">
-                  Model
+                  Runtime
                 </label>
-                <ModelSelectorInline
-                  value={config.model}
-                  onChange={(modelId) => updateConfig('model', modelId)}
-                  includeLocal={true}
-                  onlyValidated={true}
-                />
+                <select
+                  value={config.runtime || 'langgraph'}
+                  onChange={(e) => handleRuntimeChange(e.target.value)}
+                  className="w-full px-3 py-2 bg-white dark:bg-background-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                >
+                  <option value="langgraph">LangGraph (default)</option>
+                  <option value="google_adk">Google ADK</option>
+                  <option value="anthropic_managed">Anthropic Managed</option>
+                </select>
               </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-2 uppercase">
+                Model
+              </label>
+              <ModelSelectorInline
+                value={config.model}
+                onChange={(modelId) => updateConfig('model', modelId)}
+                includeLocal={!isGoogleAdkRuntime && !isAnthropicManagedRuntime}
+                onlyValidated={true}
+                modelFilter={
+                  isGoogleAdkRuntime
+                    ? (m) => m.id.startsWith('gemini')
+                    : isAnthropicManagedRuntime
+                      ? (m) => m.id.startsWith('claude')
+                      : undefined
+                }
+              />
+              {isGoogleAdkRuntime && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Google ADK runs on Gemini models only. Human-in-the-Loop is not supported on this runtime.
+                </p>
+              )}
+              {isAnthropicManagedRuntime && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Anthropic Managed runs on Claude models only. Conversation and tool execution are hosted by Anthropic; 30-day retention.
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -831,6 +910,27 @@ export default function DeepAgentBuilder({
                 />
               </div>
             </div>
+
+            {/* Prompt caching (Anthropic / Claude models only) */}
+            {config.model.startsWith('claude') && (
+              <label className="flex items-start gap-2 cursor-pointer mt-2">
+                <input
+                  type="checkbox"
+                  checked={config.enable_prompt_caching ?? false}
+                  onChange={(e) => updateConfig('enable_prompt_caching', e.target.checked)}
+                  className="mt-0.5"
+                  style={{ accentColor: 'var(--color-primary)' }}
+                />
+                <div>
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    Prompt caching
+                  </span>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    Caches the system prompt for faster/cheaper turns (min ~2-4K tokens)
+                  </p>
+                </div>
+              </label>
+            )}
           </ConfigSection>
 
           {/* System Prompt */}
@@ -871,6 +971,32 @@ export default function DeepAgentBuilder({
             expanded={expandedSections.tools}
             onToggle={() => toggleSection('tools')}
           >
+            {isAnthropicManagedRuntime ? (
+              /* Anthropic Managed: fixed hosted toolset — our pickers don't apply. */
+              <div
+                className="p-4 rounded-lg border"
+                style={{
+                  borderColor: 'var(--color-border-dark)',
+                  backgroundColor: 'var(--color-panel-dark)',
+                }}
+              >
+                <div className="flex items-start gap-3">
+                  <Zap className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-primary)' }} />
+                  <div>
+                    <span className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+                      Fixed Anthropic toolset
+                    </span>
+                    <p className="text-xs mt-1.5 leading-relaxed" style={{ color: 'var(--color-text-muted)' }}>
+                      Runs Anthropic's built-in toolset: bash, file ops, web search/fetch — in Anthropic's hosted container. Custom, native, and MCP tools are not available on this runtime.
+                    </p>
+                    <p className="text-xs mt-1.5 leading-relaxed" style={{ color: 'var(--color-text-muted)' }}>
+                      Conversation and tool execution are hosted by Anthropic; 30-day retention.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+            <>
             <div>
               <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 uppercase mb-3">
                 MCP Tools (Native)
@@ -885,6 +1011,28 @@ export default function DeepAgentBuilder({
                   />
                 ))}
               </div>
+
+              {/* Anthropic server-side tools (Claude models only) */}
+              {config.model.startsWith('claude') && ANTHROPIC_SERVER_TOOLS.length > 0 && (
+                <div className="mt-6">
+                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 uppercase mb-1">
+                    Anthropic Server Tools
+                  </label>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                    Run on Anthropic's infrastructure — no local execution. If selected, they replace the matching native web tool.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {ANTHROPIC_SERVER_TOOLS.map(tool => (
+                      <ToolCheckbox
+                        key={tool.id}
+                        tool={tool}
+                        checked={(config.anthropic_server_tools || []).includes(tool.id)}
+                        onChange={() => toggleServerTool(tool.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Action Presets Toggle - Prominent Feature Highlight */}
               <div
@@ -997,6 +1145,8 @@ export default function DeepAgentBuilder({
                   ))}
                 </div>
               </div>
+            )}
+            </>
             )}
           </ConfigSection>
 
@@ -1199,7 +1349,7 @@ export default function DeepAgentBuilder({
                       </div>
                     </button>
                     <button
-                      onClick={() => addRegularAgentMiddleware('summarization', { model: 'gpt-4o-mini', max_tokens_before_summary: 1000, keep_last_n_messages: 5 })}
+                      onClick={() => addRegularAgentMiddleware('summarization', { model: 'gpt-5.4-mini', max_tokens_before_summary: 1000, keep_last_n_messages: 5 })}
                       className="flex items-start gap-3 p-3 text-left bg-gray-50 dark:bg-background-dark border border-gray-200 dark:border-border-dark rounded-lg hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
                     >
                       <Plus className="w-4 h-4 mt-0.5 flex-shrink-0 text-gray-500" />
@@ -1400,7 +1550,7 @@ export default function DeepAgentBuilder({
                                   </label>
                                   <input
                                     type="text"
-                                    value={mw.config.model ?? 'gpt-4o-mini'}
+                                    value={mw.config.model ?? 'gpt-5.4-mini'}
                                     onChange={(e) => {
                                       const middleware = [...config.middleware];
                                       middleware[index].config.model = e.target.value;

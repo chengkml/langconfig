@@ -22,9 +22,9 @@ Based on patterns from:
 from core.agents.templates import AgentTemplate, AgentCategory
 
 # Use current model types from your existing templates
-MODEL_REASONING = "claude-sonnet-4-5-20250929"  # Best for complex reasoning and writing
-MODEL_FAST = "gpt-4o-mini"  # Best for fast data gathering
-MODEL_BALANCED = "gpt-5"  # Good balance for critique and general tasks
+MODEL_REASONING = "claude-sonnet-4-6"  # Best for complex reasoning and writing
+MODEL_FAST = "gpt-5.4-mini"  # Best for fast data gathering
+MODEL_BALANCED = "gpt-5.4"  # Good balance for critique and general tasks
 
 # =============================================================================
 # 1. RESEARCH PLANNER (Decomposition/Chapter 6)
@@ -74,7 +74,7 @@ FIELD_RESEARCHER = AgentTemplate(
     description="Conducts focused web research on specific questions using search tools. Optimized for speed and accuracy.",
     category=AgentCategory.RESEARCH,
     model=MODEL_FAST,  # Optimized for fast data gathering
-    fallback_models=[MODEL_BALANCED, "gemini-2.0-flash"],
+    fallback_models=[MODEL_BALANCED, "gemini-2.5-flash"],
     temperature=0.3,
     system_prompt="""ROLE: Diligent Data Collector and Analyst.
 EXPERTISE: Web research, information synthesis, source evaluation, citation formatting.

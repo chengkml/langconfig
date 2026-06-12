@@ -30,9 +30,16 @@ export default function ChatSettingsMenu({
   onClearHistory,
   onEndSession
 }: ChatSettingsMenuProps) {
-  const { hitlEnabled, toggleHitl } = useChat();
+  const { hitlEnabled, toggleHitl, sessions } = useChat();
   const [isOpen, setIsOpen] = useState(false);
   const [hoveredItem, setHoveredItem] = useState<string | null>(null);
+
+  // HITL (interrupt/resume) is a LangGraph capability; other runtimes
+  // (e.g. Google ADK) don't support it, so the toggle is disabled there.
+  const sessionRuntime = sessionId
+    ? sessions.find((s) => s.session_id === sessionId)?.runtime ?? 'langgraph'
+    : 'langgraph';
+  const hitlSupported = sessionRuntime === 'langgraph';
 
   const downloadHistory = () => {
     const history = JSON.stringify({
@@ -76,8 +83,13 @@ export default function ChatSettingsMenu({
     <div className="relative">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="p-2 rounded-lg transition-colors hover:bg-gray-100"
-        style={{ color: 'var(--color-text-muted)' }}
+        className="border-2 p-2 transition-[transform,box-shadow,background-color] hover:translate-x-0.5 hover:translate-y-0.5"
+        style={{
+          backgroundColor: 'white',
+          borderColor: 'var(--color-border-dark)',
+          boxShadow: '3px 3px 0 var(--color-border-dark)',
+          color: 'var(--color-text-muted)',
+        }}
         title="Settings"
       >
         <Settings className="w-5 h-5" />
@@ -90,7 +102,7 @@ export default function ChatSettingsMenu({
             onClick={() => setIsOpen(false)}
           />
           <div
-            className="absolute right-0 mt-2 w-64 rounded-lg shadow-lg border z-50"
+            className="absolute right-0 z-50 mt-2 w-64 border-2 shadow-[4px_4px_0_var(--color-border-dark)]"
             style={{
               backgroundColor: 'white',
               borderColor: 'var(--color-border-dark)',
@@ -99,9 +111,11 @@ export default function ChatSettingsMenu({
             {/* HITL Toggle */}
             <button
               onClick={handleToggleHitl}
-              onMouseEnter={() => setHoveredItem('hitl')}
+              disabled={!hitlSupported}
+              onMouseEnter={() => hitlSupported && setHoveredItem('hitl')}
               onMouseLeave={() => setHoveredItem(null)}
-              className="w-full px-4 py-3 flex items-center justify-between transition-colors border-b"
+              title={hitlSupported ? undefined : `Human-in-the-Loop is not supported by the '${sessionRuntime}' runtime`}
+              className="flex w-full items-center justify-between border-b-2 px-4 py-3 font-mono text-xs font-semibold uppercase tracking-[0.12em] transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               style={{
                 borderColor: 'var(--color-border-dark)',
                 backgroundColor: hoveredItem === 'hitl' ? 'var(--color-primary)' : 'transparent',
@@ -109,7 +123,6 @@ export default function ChatSettingsMenu({
             >
               <div className="flex items-center gap-2">
                 <span
-                  className="text-sm"
                   style={{ color: hoveredItem === 'hitl' ? 'white' : 'var(--color-text-primary)' }}
                 >
                   Human-in-the-Loop
@@ -120,13 +133,15 @@ export default function ChatSettingsMenu({
                 style={{
                   color: hoveredItem === 'hitl'
                     ? 'white'
-                    : hitlEnabled
+                    : hitlEnabled && hitlSupported
                     ? 'var(--color-primary)'
                     : 'var(--color-text-muted)',
                 }}
               >
-                {hitlEnabled && <Check className="w-4 h-4" />}
-                <span className="text-xs">{hitlEnabled ? 'ON' : 'OFF'}</span>
+                {hitlEnabled && hitlSupported && <Check className="w-4 h-4" />}
+                <span className="text-xs">
+                  {hitlSupported ? (hitlEnabled ? 'ON' : 'OFF') : 'N/A'}
+                </span>
               </div>
             </button>
 
@@ -136,7 +151,7 @@ export default function ChatSettingsMenu({
               disabled={!sessionId}
               onMouseEnter={() => !sessionId || setHoveredItem('download')}
               onMouseLeave={() => setHoveredItem(null)}
-              className="w-full px-4 py-3 flex items-center gap-2 transition-colors border-b disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex w-full items-center gap-2 border-b-2 px-4 py-3 font-mono text-xs font-semibold uppercase tracking-[0.12em] transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               style={{
                 borderColor: 'var(--color-border-dark)',
                 backgroundColor: hoveredItem === 'download' ? 'var(--color-primary)' : 'transparent',
@@ -147,7 +162,6 @@ export default function ChatSettingsMenu({
                 style={{ color: hoveredItem === 'download' ? 'white' : 'var(--color-text-muted)' }}
               />
               <span
-                className="text-sm"
                 style={{ color: hoveredItem === 'download' ? 'white' : 'var(--color-text-primary)' }}
               >
                 Download History
@@ -160,7 +174,7 @@ export default function ChatSettingsMenu({
               disabled={!sessionId}
               onMouseEnter={() => !sessionId || setHoveredItem('clear')}
               onMouseLeave={() => setHoveredItem(null)}
-              className="w-full px-4 py-3 flex items-center gap-2 transition-colors border-b disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex w-full items-center gap-2 border-b-2 px-4 py-3 font-mono text-xs font-semibold uppercase tracking-[0.12em] transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               style={{
                 borderColor: 'var(--color-border-dark)',
                 backgroundColor: hoveredItem === 'clear' ? 'var(--color-primary)' : 'transparent',
@@ -171,7 +185,6 @@ export default function ChatSettingsMenu({
                 style={{ color: hoveredItem === 'clear' ? 'white' : 'var(--color-text-muted)' }}
               />
               <span
-                className="text-sm"
                 style={{ color: hoveredItem === 'clear' ? 'white' : 'var(--color-text-primary)' }}
               >
                 Clear History
@@ -184,7 +197,7 @@ export default function ChatSettingsMenu({
               disabled={!sessionId}
               onMouseEnter={() => !sessionId || setHoveredItem('end')}
               onMouseLeave={() => setHoveredItem(null)}
-              className="w-full px-4 py-3 flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex w-full items-center gap-2 px-4 py-3 font-mono text-xs font-semibold uppercase tracking-[0.12em] transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               style={{
                 borderColor: 'var(--color-border-dark)',
                 backgroundColor: hoveredItem === 'end' ? 'var(--color-primary)' : 'transparent',
@@ -195,7 +208,6 @@ export default function ChatSettingsMenu({
                 style={{ color: hoveredItem === 'end' ? 'white' : 'rgb(239, 68, 68)' }}
               />
               <span
-                className="text-sm"
                 style={{ color: hoveredItem === 'end' ? 'white' : 'rgb(239, 68, 68)' }}
               >
                 End Session

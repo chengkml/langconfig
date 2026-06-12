@@ -11,8 +11,8 @@ import { useProject } from "../../contexts/ProjectContext";
 import { useChat } from '../../features/chat/state/ChatContext';
 
 interface ModernHeaderProps {
-  currentView: 'studio' | 'library' | 'settings' | 'knowledge' | 'agents' | 'skills' | 'home' | 'community';
-  onViewChange: (view: 'studio' | 'library' | 'settings' | 'knowledge' | 'agents' | 'skills' | 'home' | 'community') => void;
+  currentView: 'studio' | 'spatial' | 'library' | 'settings' | 'knowledge' | 'agents' | 'skills' | 'home' | 'community';
+  onViewChange: (view: 'studio' | 'spatial' | 'library' | 'settings' | 'knowledge' | 'agents' | 'skills' | 'home' | 'community') => void;
 }
 
 export default function ModernHeader({
@@ -24,7 +24,7 @@ export default function ModernHeader({
   const [showProjectDropdown, setShowProjectDropdown] = useState(false);
 
   return (
-    <header className="flex items-center justify-between whitespace-nowrap border-b px-4 py-4 z-20 shrink-0 h-20" style={{ backgroundColor: 'var(--color-primary)', borderBottomColor: 'var(--color-border-dark)' }}>
+    <header className="flex items-center justify-between whitespace-nowrap border-b-2 px-4 py-4 z-20 shrink-0 h-20" style={{ backgroundColor: 'var(--color-panel-dark)', borderBottomColor: 'var(--color-border-dark)' }}>
       {/* Left: Logo - centered over agent library sidebar */}
       <div className="flex items-center h-full justify-center" style={{ width: '320px', marginLeft: '-16px' }}>
 
@@ -46,28 +46,29 @@ export default function ModernHeader({
             cursor: 'pointer',
           }}
         >
-          {/* GhostPeony Avatar Icon - rotated 45deg right */}
+          {/* Peony brand mark */}
           <img
-            src="/GhostPeony.png"
-            alt="GhostPeony"
+            src="/peony.png"
+            alt="LangConfig Peony"
             style={{
-              height: '68px',
-              width: '68px',
+              height: '62px',
+              width: '62px',
               display: 'block',
-              borderRadius: '14px',
+              borderRadius: '4px',
               objectFit: 'cover',
-              transform: 'rotate(-45deg)', // 45 degrees to the right
+              border: '2px solid rgba(255, 250, 240, 0.85)',
+              boxShadow: '4px 4px 0 var(--color-border-dark)',
             }}
           />
           {/* LangConfig Logo */}
           <img
             src="/langconfignewlogo.png"
             alt="LangConfig"
+            className="header-wordmark"
             style={{
               height: '100px',
               width: 'auto',
               display: 'block',
-              filter: 'brightness(0) invert(1)', // Makes the logo white
               margin: '0',
               marginTop: '15px', // Shift logo down slightly
             }}
@@ -79,12 +80,12 @@ export default function ModernHeader({
       <nav className="flex items-center gap-2 absolute left-1/2 transform -translate-x-1/2">
         <button
           onClick={() => onViewChange('studio')}
-          className={`px-4 py-2 text-sm rounded-lg transition-all border ${currentView === 'studio'
-            ? 'bg-white/30 text-white font-semibold border-white/40'
-            : 'text-white/90 font-medium hover:bg-white/15 hover:text-white border-transparent hover:border-white/20'
+          className={`px-4 py-2 text-sm rounded-[4px] transition-all border-2 ${currentView === 'studio'
+            ? 'bg-background-light/70 font-semibold border-border-dark shadow-[3px_3px_0_var(--color-border-dark)]'
+            : 'font-medium hover:bg-background-light/45 border-transparent hover:border-border-dark'
             } `}
           style={{
-            textShadow: currentView === 'studio' ? '0 1px 2px rgba(0, 0, 0, 0.25)' : '0 1px 2px rgba(0, 0, 0, 0.15)',
+            color: 'var(--color-text-primary)',
             backdropFilter: currentView === 'studio' ? 'blur(8px)' : 'none'
           }}
         >
@@ -94,13 +95,29 @@ export default function ModernHeader({
           </span>
         </button>
         <button
-          onClick={() => onViewChange('agents')}
-          className={`px-4 py-2 text-sm rounded-lg transition-all border ${currentView === 'agents'
-            ? 'bg-white/30 text-white font-semibold border-white/40'
-            : 'text-white/90 font-medium hover:bg-white/15 hover:text-white border-transparent hover:border-white/20'
+          onClick={() => onViewChange('spatial')}
+          className={`px-4 py-2 text-sm rounded-[4px] transition-all border-2 ${currentView === 'spatial'
+            ? 'bg-background-light/70 font-semibold border-border-dark shadow-[3px_3px_0_var(--color-border-dark)]'
+            : 'font-medium hover:bg-background-light/45 border-transparent hover:border-border-dark'
             } `}
           style={{
-            textShadow: currentView === 'agents' ? '0 1px 2px rgba(0, 0, 0, 0.25)' : '0 1px 2px rgba(0, 0, 0, 0.15)',
+            color: 'var(--color-text-primary)',
+            backdropFilter: currentView === 'spatial' ? 'blur(8px)' : 'none'
+          }}
+        >
+          <span className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-base">deployed_code</span>
+            Spatial
+          </span>
+        </button>
+        <button
+          onClick={() => onViewChange('agents')}
+          className={`px-4 py-2 text-sm rounded-[4px] transition-all border-2 ${currentView === 'agents'
+            ? 'bg-background-light/70 font-semibold border-border-dark shadow-[3px_3px_0_var(--color-border-dark)]'
+            : 'font-medium hover:bg-background-light/45 border-transparent hover:border-border-dark'
+            } `}
+          style={{
+            color: 'var(--color-text-primary)',
             backdropFilter: currentView === 'agents' ? 'blur(8px)' : 'none'
           }}
         >
@@ -111,12 +128,12 @@ export default function ModernHeader({
         </button>
         <button
           onClick={() => onViewChange('library')}
-          className={`px-4 py-2 text-sm rounded-lg transition-all border ${currentView === 'library'
-            ? 'bg-white/30 text-white font-semibold border-white/40'
-            : 'text-white/90 font-medium hover:bg-white/15 hover:text-white border-transparent hover:border-white/20'
+          className={`px-4 py-2 text-sm rounded-[4px] transition-all border-2 ${currentView === 'library'
+            ? 'bg-background-light/70 font-semibold border-border-dark shadow-[3px_3px_0_var(--color-border-dark)]'
+            : 'font-medium hover:bg-background-light/45 border-transparent hover:border-border-dark'
             } `}
           style={{
-            textShadow: currentView === 'library' ? '0 1px 2px rgba(0, 0, 0, 0.25)' : '0 1px 2px rgba(0, 0, 0, 0.15)',
+            color: 'var(--color-text-primary)',
             backdropFilter: currentView === 'library' ? 'blur(8px)' : 'none'
           }}
         >
@@ -127,12 +144,12 @@ export default function ModernHeader({
         </button>
         <button
           onClick={() => onViewChange('knowledge')}
-          className={`px-4 py-2 text-sm rounded-lg transition-all border ${currentView === 'knowledge'
-            ? 'bg-white/30 text-white font-semibold border-white/40'
-            : 'text-white/90 font-medium hover:bg-white/15 hover:text-white border-transparent hover:border-white/20'
+          className={`px-4 py-2 text-sm rounded-[4px] transition-all border-2 ${currentView === 'knowledge'
+            ? 'bg-background-light/70 font-semibold border-border-dark shadow-[3px_3px_0_var(--color-border-dark)]'
+            : 'font-medium hover:bg-background-light/45 border-transparent hover:border-border-dark'
             }`}
           style={{
-            textShadow: currentView === 'knowledge' ? '0 1px 2px rgba(0, 0, 0, 0.25)' : '0 1px 2px rgba(0, 0, 0, 0.15)',
+            color: 'var(--color-text-primary)',
             backdropFilter: currentView === 'knowledge' ? 'blur(8px)' : 'none'
           }}
         >
@@ -143,12 +160,12 @@ export default function ModernHeader({
         </button>
         <button
           onClick={() => onViewChange('community')}
-          className={`px-4 py-2 text-sm rounded-lg transition-all border ${currentView === 'community'
-            ? 'bg-white/30 text-white font-semibold border-white/40'
-            : 'text-white/90 font-medium hover:bg-white/15 hover:text-white border-transparent hover:border-white/20'
+          className={`px-4 py-2 text-sm rounded-[4px] transition-all border-2 ${currentView === 'community'
+            ? 'bg-background-light/70 font-semibold border-border-dark shadow-[3px_3px_0_var(--color-border-dark)]'
+            : 'font-medium hover:bg-background-light/45 border-transparent hover:border-border-dark'
             }`}
           style={{
-            textShadow: currentView === 'community' ? '0 1px 2px rgba(0, 0, 0, 0.25)' : '0 1px 2px rgba(0, 0, 0, 0.15)',
+            color: 'var(--color-text-primary)',
             backdropFilter: currentView === 'community' ? 'blur(8px)' : 'none'
           }}
         >
@@ -164,10 +181,10 @@ export default function ModernHeader({
         {/* Chat Button */}
         <button
           onClick={() => openChat()}
-          className="flex items-center justify-center h-10 w-10 rounded-lg hover:bg-white/15 transition-all text-white/90 hover:text-white border border-transparent hover:border-white/20"
+          className="flex items-center justify-center h-10 w-10 rounded-[4px] hover:bg-background-light/45 transition-all border-2 border-transparent hover:border-border-dark"
           title="Chat (Ctrl+K)"
           style={{
-            textShadow: '0 1px 2px rgba(0, 0, 0, 0.15)'
+            color: 'var(--color-text-primary)'
           }}
         >
           <MessageSquare className="w-5 h-5" />
@@ -177,9 +194,9 @@ export default function ModernHeader({
         <div className="relative">
           <button
             onClick={() => setShowProjectDropdown(!showProjectDropdown)}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/15 transition-all text-white/90 hover:text-white border border-white/20 hover:border-white/40"
+            className="flex items-center gap-2 px-3 py-2 rounded-[4px] hover:bg-background-light/45 transition-all border-2 border-border-dark"
             style={{
-              textShadow: '0 1px 2px rgba(0, 0, 0, 0.15)',
+              color: 'var(--color-text-primary)',
               minWidth: '150px'
             }}
           >
@@ -200,7 +217,7 @@ export default function ModernHeader({
                 onClick={() => setShowProjectDropdown(false)}
               />
               <div
-                className="absolute right-0 mt-2 w-64 rounded-lg shadow-lg border z-40 max-h-96 overflow-auto"
+                className="absolute right-0 mt-2 w-64 rounded-[4px] border-2 z-40 max-h-96 overflow-auto shadow-[4px_4px_0_var(--color-border-dark)]"
                 style={{
                   backgroundColor: 'var(--color-panel-dark)',
                   borderColor: 'var(--color-border-dark)'
@@ -248,10 +265,10 @@ export default function ModernHeader({
 
         <button
           onClick={() => onViewChange('settings')}
-          className="flex items-center justify-center h-10 w-10 rounded-lg hover:bg-white/15 transition-all text-white/90 hover:text-white border border-transparent hover:border-white/20"
+          className="flex items-center justify-center h-10 w-10 rounded-[4px] hover:bg-background-light/45 transition-all border-2 border-transparent hover:border-border-dark"
           title="Settings"
           style={{
-            textShadow: '0 1px 2px rgba(0, 0, 0, 0.15)'
+            color: 'var(--color-text-primary)'
           }}
         >
           <span className="material-symbols-outlined text-base">settings</span>

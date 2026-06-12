@@ -26,7 +26,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables.config import RunnableConfig
 
-from .graph_state import WorkflowState, HandoffSummary
+from core.workflows.state import WorkflowState, HandoffSummary
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -92,8 +92,8 @@ def get_compaction_llm() -> BaseChatModel:
     global _compaction_llm
 
     if _compaction_llm is None:
-        # Default to gpt-4o-mini for fast, cheap compression
-        model_name = getattr(settings, 'COMPACTOR_MODEL_NAME', 'gpt-4o-mini')
+        # Default to gpt-5.4-mini for fast, cheap compression
+        model_name = getattr(settings, 'COMPACTOR_MODEL_NAME', 'gpt-5.4-mini')
 
         logger.info(f"Initializing Context Compactor LLM: {model_name}")
 
@@ -401,7 +401,7 @@ async def update_context_with_handoff(
     Returns:
         Updated workflow state
     """
-    from .graph_state import create_handoff_summary, add_handoff_to_state
+    from core.workflows.state import create_handoff_summary, add_handoff_to_state
 
     # Create structured handoff summary
     handoff = create_handoff_summary(

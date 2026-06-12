@@ -37,8 +37,8 @@ WORKFLOW_ARCHITECT = AgentTemplate(
     - Architect LangGraph state machines""",
     category=AgentCategory.ARCHITECTURE,
 
-    model="claude-sonnet-4-5-20250929",  # Claude excels at system design
-    fallback_models=["gpt-5", "gemini-2.5-pro"],
+    model="claude-sonnet-4-6",  # Claude excels at system design
+    fallback_models=["gpt-5.4", "gemini-3.1-pro-preview"],
     temperature=0.4,
 
     system_prompt="""ROLE: Agent Workflow Architect
@@ -94,8 +94,8 @@ PERFORMANCE_ANALYST = AgentTemplate(
     - Recommend infrastructure improvements""",
     category=AgentCategory.QA_VALIDATION,
 
-    model="gpt-5",
-    fallback_models=["claude-sonnet-4-5-20250929", "gpt-4o-mini"],
+    model="gpt-5.4",
+    fallback_models=["claude-sonnet-4-6", "gpt-5.4-mini"],
     temperature=0.3,
 
     system_prompt="""ROLE: Performance Engineer & Data Analyst
@@ -156,8 +156,8 @@ CONTEXT_CURATOR = AgentTemplate(
     - Clean up outdated context""",
     category=AgentCategory.DOCUMENTATION,
 
-    model="gpt-4o-mini",  # Cheaper model is fine for document processing
-    fallback_models=["gpt-4o", "claude-3-5-haiku-20241022"],
+    model="gpt-5.4-mini",  # Cheaper model is fine for document processing
+    fallback_models=["gpt-5.4", "claude-haiku-4-5"],
     temperature=0.4,
 
     system_prompt="""ROLE: Knowledge Engineer & Documentation Specialist
@@ -216,8 +216,8 @@ TECHNICAL_WRITER = AgentTemplate(
     - Create onboarding materials""",
     category=AgentCategory.DOCUMENTATION,
 
-    model="claude-sonnet-4-5-20250929",  # Claude excels at technical writing
-    fallback_models=["gpt-5", "gemini-2.5-pro"],
+    model="claude-sonnet-4-6",  # Claude excels at technical writing
+    fallback_models=["gpt-5.4", "gemini-3.1-pro-preview"],
     temperature=0.6,
 
     system_prompt="""ROLE: Senior Technical Writer
@@ -278,8 +278,8 @@ TEST_ARCHITECT = AgentTemplate(
     - Review testing practices""",
     category=AgentCategory.TESTING,
 
-    model="gpt-5",
-    fallback_models=["claude-sonnet-4-5-20250929", "gpt-4o-mini"],
+    model="gpt-5.4",
+    fallback_models=["claude-sonnet-4-6", "gpt-5.4-mini"],
     temperature=0.4,
 
     system_prompt="""ROLE: Test Automation Engineer & QA Architect
@@ -340,8 +340,8 @@ GKE_DEPLOYMENT_SPECIALIST = AgentTemplate(
     - Troubleshoot deployment issues""",
     category=AgentCategory.DEVOPS,
 
-    model="gpt-5",
-    fallback_models=["claude-sonnet-4-5-20250929"],
+    model="gpt-5.4",
+    fallback_models=["claude-sonnet-4-6"],
     temperature=0.3,
 
     system_prompt="""ROLE: DevOps Engineer (GKE/Kubernetes Specialist)

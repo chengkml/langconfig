@@ -12,8 +12,8 @@ Visual platform for building LangChain agents and LangGraph workflows.
 
 ```bash
 # Start development
-cd backend && python main.py      # API server :8765
-npm run dev                        # Frontend :1420
+cd backend && python main.py      # API server :8780
+npm run dev                        # Frontend :1425
 
 # Database
 docker-compose up -d postgres      # Start PostgreSQL
@@ -39,8 +39,8 @@ npm run build                      # Frontend build check
 
 ## API
 
-- Base URL: `http://localhost:8765`
-- Swagger docs: `http://localhost:8765/docs`
+- Base URL: `http://localhost:8780`
+- Swagger docs: `http://localhost:8780/docs`
 - Key endpoints:
   - `POST /api/workflows/{id}/execute` - Run workflow (SSE)
   - `POST /api/agents/{id}/chat` - Chat with agent (SSE)

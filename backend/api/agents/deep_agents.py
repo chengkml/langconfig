@@ -31,6 +31,34 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/deepagents", tags=["deepagents"])
 
 
+async def _prepare_anthropic_managed_refs(template, config: DeepAgentConfig) -> dict:
+    """Provision/update the Anthropic managed agent backing a template.
+
+    Calls AnthropicManagedRuntime.prepare_template (create on first save,
+    update on later saves — never from the chat path) and returns the
+    external refs to persist into deep_agent_templates.external_refs.
+    Anthropic API and validation errors surface as 400s.
+    """
+    from core.runtimes import get_runtime
+
+    try:
+        runtime = get_runtime("anthropic_managed")
+    except ValueError as e:
+        # Registry-level failure (e.g. anthropic SDK missing/too old).
+        raise HTTPException(status_code=400, detail=str(e))
+
+    import anthropic
+
+    try:
+        return await runtime.prepare_template(template, config.dict())
+    except ValueError as e:
+        # Claude-only model gate / missing API key.
+        raise HTTPException(status_code=400, detail=str(e))
+    except anthropic.APIError as e:
+        logger.error(f"Anthropic API error preparing managed agent: {e}")
+        raise HTTPException(status_code=400, detail=f"Anthropic API error: {e}")
+
+
 def _ensure_deep_agent_config(config: dict) -> dict:
     """
     Ensure config has use_deepagents=true for DeepAgents.
@@ -124,12 +152,20 @@ async def create_deepagent(
             description=request.description,
             category=request.category,
             base_template_id=request.base_template_id,
+            runtime=request.config.runtime or "langgraph",
             config=request.config.dict(),
             middleware_config=[m.dict() for m in request.config.middleware],
             subagents_config=[s.dict() for s in request.config.subagents],
             backend_config=request.config.backend.dict(),
             guardrails_config=request.config.guardrails.dict(),
         )
+
+        # Anthropic Managed runtime: provision the remote agent at save time
+        # (the chat path never creates agents) and persist its refs.
+        if agent.runtime == "anthropic_managed":
+            agent.external_refs = await _prepare_anthropic_managed_refs(
+                agent, request.config
+            )
 
         db.add(agent)
         db.commit()
@@ -156,6 +192,8 @@ async def create_deepagent(
             updated_at=agent.updated_at.isoformat()
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating DeepAgent: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -287,11 +325,18 @@ async def update_deepagent(
     if request.description:
         agent.description = request.description
     if request.config:
+        agent.runtime = request.config.runtime or "langgraph"
         agent.config = request.config.dict()
         agent.middleware_config = [m.dict() for m in request.config.middleware]
         agent.subagents_config = [s.dict() for s in request.config.subagents]
         agent.backend_config = request.config.backend.dict()
         agent.guardrails_config = request.config.guardrails.dict()
+
+        # Anthropic Managed runtime: create the remote agent on first save,
+        # update it (new immutable version) on later saves.
+        if agent.runtime == "anthropic_managed":
+            refs = await _prepare_anthropic_managed_refs(agent, request.config)
+            agent.external_refs = {**(agent.external_refs or {}), **refs}
 
     db.commit()
     db.refresh(agent)
@@ -515,6 +560,7 @@ async def import_langconfig(
             name=agent_data["name"],
             description=agent_data.get("description"),
             category=agent_data.get("category", "research"),
+            runtime=config.runtime or "langgraph",
             config=config.dict(),
             middleware_config=[m.dict() for m in config.middleware],
             subagents_config=[s.dict() for s in config.subagents],

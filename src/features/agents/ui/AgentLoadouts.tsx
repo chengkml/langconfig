@@ -11,10 +11,14 @@ import { Search, Plus, Trash2, Edit, Download, Copy, Upload, Sparkles, Code, Dat
 import DeepAgentBuilder from './DeepAgentBuilder';
 import SkillBuilderModal from './SkillBuilderModal';
 import CustomToolBuilder from '../../tools/ui/CustomToolBuilder';
+import ToolsModeView, { type ToolTemplateSummary } from './ToolsModeView';
 import apiClient, { ConflictErrorClass } from '../../../lib/api-client';
 import ConflictDialog from '../../workflows/ui/ConflictDialog';
 import { useNotification } from '../../../hooks/useNotification';
 import { useAvailableModels } from '../../../hooks/useAvailableModels';
+import { getModelDisplayName } from '../../../lib/modelDisplayNames';
+import { AVAILABLE_TOOLS } from '../data/agentTools';
+import type { CustomTool, Skill, SelectedItem as SelectedItemOf } from './agentLoadoutTypes';
 
 interface Agent {
   id: number;
@@ -30,52 +34,9 @@ interface Agent {
   updated_at: string;
 }
 
-interface CustomTool {
-  id?: number;
-  tool_id: string;
-  name: string;
-  description: string;
-  tool_type: string;
-  category?: string;
-  tags: string[];
-  is_template_based?: boolean;
-  usage_count: number;
-  error_count: number;
-  last_used_at?: string;
-  input_schema?: any;
-  implementation_config?: any;
-  output_format?: string;
-  validation_rules?: any;
-  is_advanced_mode?: boolean;
-  template_type?: string;
-}
+type SelectedItem = SelectedItemOf<Agent>;
 
-interface Skill {
-  skill_id: string;
-  name: string;
-  description: string;
-  version: string;
-  source_type: 'builtin' | 'personal' | 'project';
-  tags: string[];
-  triggers: string[];
-  allowed_tools: string[] | null;
-  usage_count: number;
-  last_used_at: string | null;
-  avg_success_rate: number;
-  // Extended detail fields (optional, populated when fetching detail)
-  instructions?: string;
-  examples?: string | null;
-  source_path?: string;
-  author?: string | null;
-  required_context?: string[];
-}
-
-type SelectedItem =
-  | { type: 'agent'; data: Agent }
-  | { type: 'tool'; data: CustomTool }
-  | { type: 'skill'; data: Skill }
-  | { type: 'template'; category: 'agent' | 'tool' }
-  | null;
+type CenterMode = 'agents' | 'tools';
 
 // Agent Configuration View Component
 interface AgentConfigViewProps {
@@ -185,25 +146,7 @@ const AgentConfigView = ({ agent, onSave, onDelete, onClose }: AgentConfigViewPr
     };
   }, []);
 
-  // Complete tool list from backend/tools/native_tools.py with DeepAgents standard naming
-  // See: https://docs.langchain.com/oss/python/deepagents/harness
-  const AVAILABLE_TOOLS = [
-    { id: 'web_search', name: 'Web Search', description: 'Search the web (DuckDuckGo)', category: 'web' },
-    { id: 'web_fetch', name: 'Web Fetch', description: 'Fetch webpage content', category: 'web' },
-    { id: 'browser', name: 'Browser Automation', description: 'Advanced web interaction (Playwright)', category: 'web' },
-    // DeepAgents standard filesystem tools
-    { id: 'read_file', name: 'Read File', description: 'Read file contents with line numbers', category: 'files' },
-    { id: 'write_file', name: 'Write File', description: 'Create new files', category: 'files' },
-    { id: 'ls', name: 'List Directory', description: 'List directory contents with metadata', category: 'files' },
-    { id: 'edit_file', name: 'Edit File', description: 'Exact string replacements in files', category: 'files' },
-    { id: 'glob', name: 'Glob', description: 'Find files matching patterns', category: 'files' },
-    { id: 'grep', name: 'Grep', description: 'Search file contents with regex', category: 'files' },
-    { id: 'enable_memory', name: 'Enable Memory', description: 'Capability flag: enables long‑term memory for this agent (persisted via project/workflow store). Not a tool by itself; pair with Store/Recall Memory.', category: 'memory' },
-    { id: 'memory_store', name: 'Store Memory', description: 'Save information to the agent\'s long‑term memory store', category: 'memory' },
-    { id: 'memory_recall', name: 'Recall Memory', description: 'Retrieve previously stored information from memory', category: 'memory' },
-    { id: 'enable_rag', name: 'Enable RAG', description: 'Capability flag: enables retrieval from the project\'s vector store (documents/KB). Not a tool by itself.', category: 'memory' },
-    { id: 'reasoning_chain', name: 'Reasoning Chain', description: 'Multi-step reasoning', category: 'reasoning' },
-  ];
+  // Native tool list lives in ../data/agentTools (AVAILABLE_TOOLS import)
 
   // Complete middleware list from backend/orchestration/middleware_presets.py
   const MIDDLEWARE_OPTIONS = [
@@ -251,7 +194,7 @@ const AgentConfigView = ({ agent, onSave, onDelete, onClose }: AgentConfigViewPr
       type: 'dictionary',  // Default to dictionary-based
       system_prompt: '',
       tools: [],
-      model: config.model || 'claude-sonnet-4-5-20250929',
+      model: config.model || 'claude-sonnet-4-6',
       middleware: [],
       workflow_id: null,
       workflow_config: null
@@ -337,7 +280,7 @@ from langgraph.prebuilt import create_react_agent
 
 # Initialize LLM
 llm = ChatOpenAI(
-    model="${config.model || 'gpt-4o'}",
+    model="${config.model || 'gpt-5.4'}",
     temperature=${config.temperature ?? 0.7},
     max_tokens=${config.max_tokens || 4000}
 )
@@ -565,7 +508,7 @@ print(result)
                       Model
                     </label>
                     <select
-                      value={config.model || 'gpt-4o'}
+                      value={config.model || 'gpt-5.4'}
                       onChange={(e) => setConfig({ ...config, model: e.target.value })}
                       className="px-3 py-2 border border-gray-200 dark:border-border-dark bg-white dark:bg-panel-dark rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
                       disabled={isModelsLoading}
@@ -576,6 +519,13 @@ print(result)
                     >
                       {availableModelsList.length > 0 ? (
                         <>
+                          {/* Retired model: keep the saved value visible instead of
+                              silently falling back to the first option */}
+                          {config.model && !availableModelsList.some(m => m.id === config.model) && (
+                            <option value={config.model} disabled>
+                              {getModelDisplayName(config.model)} (retired)
+                            </option>
+                          )}
                           {/* Cloud Models */}
                           <optgroup label="Cloud Models">
                             {availableModelsList.filter(m => m.type === 'cloud').map(model => (
@@ -597,11 +547,12 @@ print(result)
                         </>
                       ) : (
                         <>
-                          <option value="gpt-5.2">GPT-5.2</option>
-                          <option value="gpt-5.1">GPT-5.1</option>
-                          <option value="gpt-4o">GPT-4o</option>
-                          <option value="gpt-4o-mini">GPT-4o Mini</option>
-                          <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
+                          <option value="gpt-5.5">GPT-5.5</option>
+                          <option value="gpt-5.4">GPT-5.4</option>
+                          <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
+                          <option value="gpt-5.4-nano">GPT-5.4 Nano</option>
+                          <option value="claude-opus-4-8">Claude Opus 4.8</option>
+                          <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
                           <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
                         </>
                       )}
@@ -705,97 +656,106 @@ print(result)
                     )}
                   </label>
                 ))}
+              </div>
 
-                {/* Custom Tools */}
+              {/* Custom Tools - separate section below built-in tools */}
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg mb-2 mt-4" style={{ backgroundColor: 'var(--color-primary)' }}>
+                <h3 className="text-sm font-semibold" style={{ color: 'white' }}>
+                  Custom Tools
+                </h3>
                 {availableCustomTools.length > 0 && (
-                  <>
-                    <div className="px-3 py-1.5 rounded-lg mb-2 mt-4" style={{ backgroundColor: 'var(--color-primary)' }}>
-                      <h3 className="text-sm font-semibold" style={{ color: 'white' }}>
-                        Custom Tools
-                      </h3>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {availableCustomTools.map(tool => {
-                        const isExpanded = expandedTools.has(tool.tool_id);
-                        return (
-                          <div key={tool.tool_id} className="flex flex-col">
-                            <label
-                              className="group relative flex items-start gap-2 px-3 py-2.5 rounded-xl cursor-pointer transition-all duration-200 border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 hover:border-primary/50 hover:shadow-md"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={(config.custom_tools || []).includes(tool.tool_id)}
-                                onChange={() => toggleCustomTool(tool.tool_id)}
-                                className="w-3.5 h-3.5 text-primary rounded focus:ring-1 focus:ring-primary cursor-pointer flex-shrink-0 mt-0.5"
-                              />
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center justify-between gap-2 mb-1">
-                                  <div className="text-xs font-semibold truncate flex-1" style={{ color: 'var(--color-text-primary, #1a1a1a)' }}>
-                                    {tool.name || tool.tool_id}
-                                  </div>
-                                  <button
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      setExpandedTools(prev => {
-                                        const next = new Set(prev);
-                                        if (next.has(tool.tool_id)) {
-                                          next.delete(tool.tool_id);
-                                        } else {
-                                          next.add(tool.tool_id);
-                                        }
-                                        return next;
-                                      });
-                                    }}
-                                    className="text-xs px-2 py-0.5 rounded hover:bg-primary/10 flex-shrink-0"
-                                    style={{ color: 'var(--color-primary)' }}
-                                  >
-                                    {isExpanded ? 'Hide' : 'Details'}
-                                  </button>
-                                </div>
-                                {tool.category && (
-                                  <div className="text-xs mb-1 truncate" style={{ color: 'var(--color-text-secondary, #6b7280)' }}>
-                                    {tool.category}
-                                  </div>
-                                )}
-                                <div className="text-xs leading-snug line-clamp-2" style={{ color: 'var(--color-text-secondary, #6b7280)' }}>
-                                  {tool.description || 'No description available'}
-                                </div>
+                  <span className="text-xs px-1.5 py-0.5 rounded-full font-medium" style={{ backgroundColor: 'rgba(255,255,255,0.2)', color: 'white' }}>
+                    {(config.custom_tools || []).length}/{availableCustomTools.length}
+                  </span>
+                )}
+              </div>
+              {availableCustomTools.length > 0 ? (
+                <div className="grid grid-cols-2 gap-3">
+                  {availableCustomTools.map(tool => {
+                    const isExpanded = expandedTools.has(tool.tool_id);
+                    return (
+                      <div key={tool.tool_id} className="flex flex-col">
+                        <label
+                          className="group relative flex items-start gap-2 px-3 py-2.5 rounded-xl cursor-pointer transition-all duration-200 border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 hover:border-primary/50 hover:shadow-md"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={(config.custom_tools || []).includes(tool.tool_id)}
+                            onChange={() => toggleCustomTool(tool.tool_id)}
+                            className="w-3.5 h-3.5 text-primary rounded focus:ring-1 focus:ring-primary cursor-pointer flex-shrink-0 mt-0.5"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-2 mb-1">
+                              <div className="text-xs font-semibold truncate flex-1" style={{ color: 'var(--color-text-primary, #1a1a1a)' }}>
+                                {tool.name || tool.tool_id}
                               </div>
-                            </label>
-
-                            {isExpanded && tool.implementation_config && (
-                              <div className="mt-1 px-3 py-2.5 border border-gray-200 dark:border-gray-800 rounded-xl bg-gray-50/50 dark:bg-gray-800/50">
-                                <div className="text-xs space-y-1">
-                                  <div className="font-semibold mb-1.5" style={{ color: 'var(--color-text-primary)' }}>Configuration:</div>
-                                  {tool.implementation_config.provider && (
-                                    <div><strong>Provider:</strong> {tool.implementation_config.provider}</div>
-                                  )}
-                                  {tool.implementation_config.model && (
-                                    <div><strong>Model:</strong> {tool.implementation_config.model}</div>
-                                  )}
-                                  {tool.implementation_config.url && (
-                                    <div><strong>URL:</strong> {tool.implementation_config.url}</div>
-                                  )}
-                                  {tool.implementation_config.webhook_url && (
-                                    <div><strong>Webhook:</strong> {tool.implementation_config.webhook_url}</div>
-                                  )}
-                                  {tool.template_type && (
-                                    <div><strong>Template:</strong> {tool.template_type}</div>
-                                  )}
-                                  <div className="mt-1.5 pt-1.5 border-t border-gray-200 dark:border-gray-700" style={{ color: 'var(--color-text-muted)' }}>
-                                    <strong>Tool ID:</strong> {tool.tool_id}
-                                  </div>
-                                </div>
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  setExpandedTools(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(tool.tool_id)) {
+                                      next.delete(tool.tool_id);
+                                    } else {
+                                      next.add(tool.tool_id);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                className="text-xs px-2 py-0.5 rounded hover:bg-primary/10 flex-shrink-0"
+                                style={{ color: 'var(--color-primary)' }}
+                              >
+                                {isExpanded ? 'Hide' : 'Details'}
+                              </button>
+                            </div>
+                            {tool.category && (
+                              <div className="text-xs mb-1 truncate" style={{ color: 'var(--color-text-secondary, #6b7280)' }}>
+                                {tool.category}
                               </div>
                             )}
+                            <div className="text-xs leading-snug line-clamp-2" style={{ color: 'var(--color-text-secondary, #6b7280)' }}>
+                              {tool.description || 'No description available'}
+                            </div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
+                        </label>
 
-              </div>
+                        {isExpanded && tool.implementation_config && (
+                          <div className="mt-1 px-3 py-2.5 border border-gray-200 dark:border-gray-800 rounded-xl bg-gray-50/50 dark:bg-gray-800/50">
+                            <div className="text-xs space-y-1">
+                              <div className="font-semibold mb-1.5" style={{ color: 'var(--color-text-primary)' }}>Configuration:</div>
+                              {tool.implementation_config.provider && (
+                                <div><strong>Provider:</strong> {tool.implementation_config.provider}</div>
+                              )}
+                              {tool.implementation_config.model && (
+                                <div><strong>Model:</strong> {tool.implementation_config.model}</div>
+                              )}
+                              {tool.implementation_config.url && (
+                                <div><strong>URL:</strong> {tool.implementation_config.url}</div>
+                              )}
+                              {tool.implementation_config.webhook_url && (
+                                <div><strong>Webhook:</strong> {tool.implementation_config.webhook_url}</div>
+                              )}
+                              {tool.template_type && (
+                                <div><strong>Template:</strong> {tool.template_type}</div>
+                              )}
+                              <div className="mt-1.5 pt-1.5 border-t border-gray-200 dark:border-gray-700" style={{ color: 'var(--color-text-muted)' }}>
+                                <strong>Tool ID:</strong> {tool.tool_id}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="px-3 py-4 rounded-xl border border-dashed border-gray-300 dark:border-gray-700 text-center">
+                  <div className="text-xs" style={{ color: 'var(--color-text-secondary, #6b7280)' }}>
+                    No custom tools yet. Create one in the Custom Tool Builder to assign it here.
+                  </div>
+                </div>
+              )}
+
             </div>
 
             {/* Right Column - System Prompt */}
@@ -1104,15 +1064,36 @@ print(result)
                                     }}
                                   >
                                     <option value="">Use parent agent model</option>
-                                    <option value="openai:gpt-5.2">GPT-5.2</option>
-                                    <option value="openai:gpt-4o">GPT-4o</option>
-                                    <option value="openai:gpt-4o-mini">GPT-4o Mini</option>
-                                    <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>
-                                    <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
-                                    <option value="anthropic:claude-opus-4-20250514">Claude Opus 4</option>
+                                    {/* Keep a saved model visible even if it is no longer
+                                        in the available catalog */}
+                                    {subagent.model && !availableModelsList.some(m => m.id === subagent.model) && (
+                                      <option value={subagent.model} disabled>
+                                        {getModelDisplayName(subagent.model)} (retired)
+                                      </option>
+                                    )}
+                                    {availableModelsList.length > 0 ? (
+                                      availableModelsList.map(model => (
+                                        <option key={model.id} value={model.id}>
+                                          {model.name}
+                                        </option>
+                                      ))
+                                    ) : (
+                                      <>
+                                        <option value="gpt-5.5">GPT-5.5</option>
+                                        <option value="gpt-5.4">GPT-5.4</option>
+                                        <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
+                                        <option value="gpt-5.4-nano">GPT-5.4 Nano</option>
+                                        <option value="claude-fable-5">Claude Fable 5</option>
+                                        <option value="claude-opus-4-8">Claude Opus 4.8</option>
+                                        <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                                        <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
+                                        <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
+                                        <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                      </>
+                                    )}
                                   </select>
                                   <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-                                    Different models excel at different tasks (e.g., use GPT-4o for numerical analysis)
+                                    Different models excel at different tasks (e.g., use GPT-5.4 Mini for faster analysis)
                                   </p>
                                 </div>
                               </>
@@ -1776,7 +1757,7 @@ const ToolConfigView = ({ tool, onSave, onDelete, onClose }: ToolConfigViewProps
                           value={implementationConfig.provider || 'google'}
                           onChange={(e) => {
                             const newProvider = e.target.value;
-                            const defaultModel = newProvider === 'google' ? 'gemini-3-pro-image-preview' : 'dall-e-3';
+                            const defaultModel = newProvider === 'google' ? 'gemini-3-pro-image-preview' : 'gpt-image-2';
                             setImplementationConfig({
                               ...implementationConfig,
                               provider: newProvider,
@@ -1790,8 +1771,8 @@ const ToolConfigView = ({ tool, onSave, onDelete, onClose }: ToolConfigViewProps
                             color: 'var(--color-text-primary)'
                           }}
                         >
-                          <option value="google">Google (Nano Banana, Imagen 3, Veo 3)</option>
-                          <option value="openai">OpenAI (GPT-Image-1.5, DALL-E 3, Sora)</option>
+                          <option value="google">Google (Nano Banana Pro/2, Imagen 3, Veo 3)</option>
+                          <option value="openai">OpenAI (GPT Image 2, GPT-Image-1.5, DALL-E 3, Sora)</option>
                         </select>
                       </div>
 
@@ -1800,7 +1781,7 @@ const ToolConfigView = ({ tool, onSave, onDelete, onClose }: ToolConfigViewProps
                           Model
                         </label>
                         <select
-                          value={implementationConfig.model || (implementationConfig.provider === 'google' ? 'gemini-3-pro-image-preview' : 'dall-e-3')}
+                          value={implementationConfig.model || (implementationConfig.provider === 'google' ? 'gemini-3-pro-image-preview' : 'gpt-image-2')}
                           onChange={(e) => setImplementationConfig({ ...implementationConfig, model: e.target.value })}
                           className="w-full px-4 py-2 rounded-lg border text-sm"
                           style={{
@@ -1811,17 +1792,18 @@ const ToolConfigView = ({ tool, onSave, onDelete, onClose }: ToolConfigViewProps
                         >
                           {implementationConfig.provider === 'openai' ? (
                             <>
+                              <option value="gpt-image-2">GPT Image 2 (Image)</option>
                               <option value="gpt-image-1.5">GPT-Image-1.5 (Image)</option>
                               <option value="dall-e-3">DALL-E 3 (Image)</option>
                               <option value="sora">Sora (Video)</option>
                             </>
                           ) : (
                             <>
-                              <option value="gemini-3-pro-image-preview">🍌 Nano Banana Pro (Gemini 3 Pro) - RECOMMENDED</option>
-                              <option value="gemini-2.5-flash-image">🍌 Nano Banana (Gemini 2.5 Flash)</option>
+                              <option value="gemini-3.1-flash-image-preview">🍌 Nano Banana 2 (3.1 Flash) - RECOMMENDED</option>
+                              <option value="gemini-3-pro-image-preview">🍌 Nano Banana Pro (3 Pro Image)</option>
                               <option value="imagen-3">Imagen 3 (Image)</option>
+                              <option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast (Video)</option>
                               <option value="veo-3">Veo 3 (Video)</option>
-                              <option value="veo-3.1">Veo 3.1 (Video)</option>
                             </>
                           )}
                         </select>
@@ -2488,6 +2470,7 @@ const AgentLoadouts = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedItem, setSelectedItem] = useState<SelectedItem>(null);
+  const [centerMode, setCenterMode] = useState<CenterMode>('agents');
   const [showAgentBuilder, setShowAgentBuilder] = useState(false);
   const [showTypeSelector, setShowTypeSelector] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
@@ -2598,6 +2581,9 @@ const AgentLoadouts = () => {
   const fetchSkillDetail = async (skillId: string) => {
     try {
       const res = await apiClient.get(`/api/skills/${skillId}`);
+      // Skills render in the agents-mode center panel; leave Tools mode so
+      // the selection is actually visible.
+      setCenterMode('agents');
       // Update selectedItem with full skill details
       setSelectedItem({ type: 'skill', data: res.data });
     } catch (e) {
@@ -2804,6 +2790,49 @@ const AgentLoadouts = () => {
       console.error('Failed to save tool:', error);
       throw error;
     }
+  };
+
+  // Open the tool builder pre-filled from a backend tool template.
+  // Fetches the full template (config/schema) and maps it to the
+  // CustomToolBuilder `initialTemplate` shape.
+  const handleSelectToolPreset = async (template: ToolTemplateSummary) => {
+    setEditingTool(null);
+    setSelectedItem({ type: 'template', category: 'tool' });
+
+    let initialTemplate = {
+      templateId: template.template_id,
+      toolType: template.tool_type,
+      name: template.name,
+      description: template.description,
+      category: template.category,
+      tags: [] as string[],
+      implementationConfig: {} as any,
+      inputSchema: { type: 'object', properties: {} } as any,
+    };
+
+    try {
+      const res = await apiClient.getToolTemplate(template.template_id);
+      const full = res.data;
+      if (full) {
+        // The template detail's config_template is a wrapper:
+        // { tool_type, template_type, implementation_config: {...} }
+        initialTemplate = {
+          templateId: full.template_id || template.template_id,
+          toolType: full.tool_type || template.tool_type,
+          name: full.name || template.name,
+          description: full.description || template.description,
+          category: full.category || template.category,
+          tags: full.tags || [],
+          implementationConfig: full.config_template?.implementation_config || {},
+          inputSchema: full.input_schema_template || { type: 'object', properties: {} },
+        };
+      }
+    } catch (error) {
+      console.error('Failed to load tool template detail; using summary fields:', error);
+    }
+
+    setToolTemplate(initialTemplate);
+    setShowToolBuilder(true);
   };
 
   const handleDuplicateTool = async (toolId: string) => {
@@ -3030,7 +3059,12 @@ const AgentLoadouts = () => {
                           {regularAgents.map(agent => (
                             <div
                               key={agent.id}
-                              onClick={() => setSelectedItem({ type: 'agent', data: agent })}
+                              onClick={() => {
+                                // Agents render in the agents-mode center panel; leave
+                                // Tools mode so the selection is actually visible.
+                                setCenterMode('agents');
+                                setSelectedItem({ type: 'agent', data: agent });
+                              }}
                               className={`group p-3 rounded-xl border cursor-pointer transition-all duration-200 hover:shadow-md ${selectedItem?.type === 'agent' && selectedItem.data.id === agent.id
                                 ? 'bg-white dark:bg-gray-800 border-primary shadow-sm ring-1 ring-primary/20'
                                 : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 hover:border-primary/50'
@@ -3093,7 +3127,12 @@ const AgentLoadouts = () => {
                           {deepAgents.map(agent => (
                             <div
                               key={agent.id}
-                              onClick={() => setSelectedItem({ type: 'agent', data: agent })}
+                              onClick={() => {
+                                // Agents render in the agents-mode center panel; leave
+                                // Tools mode so the selection is actually visible.
+                                setCenterMode('agents');
+                                setSelectedItem({ type: 'agent', data: agent });
+                              }}
                               className={`group p-3 rounded-xl border cursor-pointer transition-all duration-200 hover:shadow-md ${selectedItem?.type === 'agent' && selectedItem.data.id === agent.id
                                 ? 'bg-white dark:bg-gray-800 border-primary shadow-sm ring-1 ring-primary/20'
                                 : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 hover:border-primary/50'
@@ -3133,10 +3172,61 @@ const AgentLoadouts = () => {
           </div>
         </div>
 
-        {/* Center Panel - Preview (60%) */}
         {/* Center Panel - Preview (75%) */}
         <div className="w-[75%] flex flex-col overflow-hidden bg-white dark:bg-panel-dark">
-          {selectedItem === null || selectedItem.type === 'template' ? (
+          {/* Mode Toggle - Agents / Tools */}
+          <div className="flex-shrink-0 px-6 pt-5 pb-4 border-b-2 border-border-dark bg-white dark:bg-panel-dark">
+            <div className="inline-flex items-center gap-1 p-1 rounded-[4px] border-2 border-border-dark bg-background-light">
+              {(
+                [
+                  { id: 'agents', label: 'Agents', icon: 'smart_toy' },
+                  { id: 'tools', label: 'Tools', icon: 'construction' },
+                ] as Array<{ id: CenterMode; label: string; icon: string }>
+              ).map((m) => {
+                const active = centerMode === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => {
+                      setCenterMode(m.id);
+                      setSelectedItem(null);
+                    }}
+                    className={`flex items-center gap-1.5 px-4 h-9 rounded-[4px] font-mono text-xs font-semibold uppercase tracking-wide transition-all border-2 ${
+                      active
+                        ? 'bg-white border-border-dark shadow-[2px_2px_0_var(--color-border-dark)]'
+                        : 'border-transparent hover:border-border-dark'
+                    }`}
+                    style={{ color: active ? 'var(--color-primary)' : 'var(--color-text-muted)' }}
+                  >
+                    <span className="material-symbols-outlined text-base">{m.icon}</span>
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {centerMode === 'tools' && selectedItem?.type === 'tool' ? (
+            /* Tools mode - Tool Configuration View */
+            <ToolConfigView
+              tool={selectedItem.data}
+              onSave={handleSaveTool}
+              onDelete={() => handleDeleteTool(selectedItem.data.tool_id)}
+              onClose={() => setSelectedItem(null)}
+            />
+          ) : centerMode === 'tools' ? (
+            /* Tools mode - Tools overview (your tools + templates) */
+            <ToolsModeView
+              tools={tools}
+              onCreateCustomTool={() => {
+                setEditingTool(null);
+                setToolTemplate(null);
+                setShowToolBuilder(true);
+              }}
+              onSelectToolPreset={handleSelectToolPreset}
+              onSelectExistingTool={(tool) => setSelectedItem({ type: 'tool', data: tool })}
+            />
+          ) : selectedItem === null || selectedItem.type === 'template' ? (
             /* Template Gallery */
             <div className="flex-1 overflow-y-auto flex items-center justify-center p-12">
               <div className="max-w-6xl w-full">
@@ -3168,7 +3258,7 @@ const AgentLoadouts = () => {
                             config: {
                               name: 'Code Generator',
                               description: 'Generate, refactor, and document code with filesystem tools and GitHub integration',
-                              model: 'claude-3-5-sonnet-20241022',
+                              model: 'claude-sonnet-4-6',
                               temperature: 0.3,
                               system_prompt: `You are an expert software engineer and code generator. Your role is to:
 
@@ -3225,7 +3315,7 @@ Always explain your code changes and provide context for your decisions.`,
                             config: {
                               name: 'Research Assistant',
                               description: 'Gather information from the web, synthesize findings, and generate comprehensive reports',
-                              model: 'claude-3-5-sonnet-20241022',
+                              model: 'claude-sonnet-4-6',
                               temperature: 0.7,
                               system_prompt: `You are an expert research assistant specializing in information gathering and synthesis. Your role is to:
 
@@ -3282,7 +3372,7 @@ Always provide balanced perspectives and acknowledge uncertainties when appropri
                             config: {
                               name: 'Testing Agent',
                               description: 'Write and execute tests, analyze coverage, and identify edge cases',
-                              model: 'claude-3-5-sonnet-20241022',
+                              model: 'claude-sonnet-4-6',
                               temperature: 0.4,
                               system_prompt: `You are an expert QA engineer and testing specialist. Your role is to:
 
@@ -3627,7 +3717,7 @@ Focus on writing maintainable, reliable tests that catch real issues.`,
                   : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
                   }`}
               >
-                Claude Skills
+                Skills
               </button>
             </div>
 
@@ -3752,7 +3842,7 @@ Focus on writing maintainable, reliable tests that catch real issues.`,
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-                      Claude Skills
+                      Skills
                     </h3>
                     <span className="text-xs px-2 py-0.5 rounded-full" style={{
                       backgroundColor: 'var(--color-background-dark)',
@@ -3760,16 +3850,6 @@ Focus on writing maintainable, reliable tests that catch real issues.`,
                     }}>
                       {filteredSkills.length}
                     </span>
-                    <a
-                      href="https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs hover:underline"
-                      style={{ color: 'var(--color-primary)' }}
-                      title="Learn about Claude Skills"
-                    >
-                      Docs ↗
-                    </a>
                   </div>
                   <button
                     onClick={() => setShowSkillBuilder(true)}

@@ -24,10 +24,10 @@ logger = logging.getLogger(__name__)
 
 class ModelTier(str, Enum):
     """Model tiers ordered by capability and cost."""
-    FAST = "fast"          # gpt-4o-mini - cheap, fast, good for simple tasks
-    STANDARD = "standard"  # gpt-4o - balanced performance/cost
-    POWERFUL = "powerful"  # claude-3.5-sonnet - high quality, expensive
-    REASONING = "reasoning"  # o1-preview - deep reasoning, very expensive
+    FAST = "fast"          # gpt-5.4-mini - cheap, fast, good for simple tasks
+    STANDARD = "standard"  # gpt-5.4 - balanced performance/cost
+    POWERFUL = "powerful"  # claude-sonnet-4-6 - high quality, expensive
+    REASONING = "reasoning"  # claude-fable-5 - deep reasoning, very expensive
 
 
 class ModelRouter:
@@ -40,11 +40,11 @@ class ModelRouter:
     Example Usage:
         >>> state = WorkflowState(task_description="fix typo in README")
         >>> model = ModelRouter.select_model(state, config={})
-        >>> print(model)  # "gpt-4o-mini"
+        >>> print(model)  # "gpt-5.4-mini"
 
         >>> state = WorkflowState(task_description="design authentication system")
         >>> model = ModelRouter.select_model(state, config={})
-        >>> print(model)  # "claude-3.5-sonnet"
+        >>> print(model)  # "claude-sonnet-4-6"
     """
 
     # Complexity indicators that suggest a simple task
@@ -70,42 +70,44 @@ class ModelRouter:
         'distributed system', 'microservices', 'api design', 'data model'
     ]
 
-    # Indicators that require deep reasoning (o1-preview)
+    # Indicators that require deep reasoning (claude-fable-5)
     REASONING_INDICATORS = [
         'algorithm', 'optimization problem', 'mathematical', 'proof',
         'complex logic', 'graph theory', 'dynamic programming', 'recursion',
         'performance analysis', 'complexity analysis'
     ]
 
-    # Model configurations by tier (Updated December 2025)
+    # Model configurations by tier (Updated June 2026)
     MODEL_CONFIGS = {
         ModelTier.FAST: {
-            'model': 'gpt-4o-mini',
+            'model': 'gpt-5.4-mini',
             'temperature': 0.7,
             'max_tokens': 4096,
             'timeout': 30,
             'cost_per_1k_tokens': 0.00015  # $0.15 per 1M tokens
         },
         ModelTier.STANDARD: {
-            'model': 'gpt-4o',
+            'model': 'gpt-5.4',
             'temperature': 0.7,
             'max_tokens': 16384,
             'timeout': 60,
             'cost_per_1k_tokens': 0.0025  # $2.50 per 1M tokens
         },
         ModelTier.POWERFUL: {
-            'model': 'claude-sonnet-4-5',
+            'model': 'claude-sonnet-4-6',
             'temperature': 0.7,
             'max_tokens': 30000,
             'timeout': 90,
             'cost_per_1k_tokens': 0.003  # $3.00 per 1M tokens
         },
         ModelTier.REASONING: {
-            'model': 'o3',
-            'temperature': 1.0,  # o3 uses fixed temperature
-            'max_tokens': 32768,
-            'timeout': 120,
-            'cost_per_1k_tokens': 0.020  # $20.00 per 1M tokens
+            'model': 'claude-fable-5',
+            # claude-fable-5 rejects sampling params; AgentFactory strips
+            # temperature for it (NO_SAMPLING_PARAM_MODELS), value here is unused
+            'temperature': 0.7,
+            'max_tokens': 64000,
+            'timeout': 300,  # Fable turns can run minutes on hard tasks
+            'cost_per_1k_tokens': 0.030  # $10/$50 per 1M blended
         }
     }
 
@@ -126,7 +128,7 @@ class ModelRouter:
                 - min_tier: ModelTier - Minimum tier to use
 
         Returns:
-            Model identifier string (e.g., "gpt-4o-mini", "claude-3.5-sonnet")
+            Model identifier string (e.g., "gpt-5.4-mini", "claude-sonnet-4-6")
         """
         if config is None:
             config = {}
@@ -247,7 +249,7 @@ class ModelRouter:
         Get full configuration for a model.
 
         Args:
-            model_name: Model identifier (e.g., "gpt-4o-mini")
+            model_name: Model identifier (e.g., "gpt-5.4-mini")
             temperature: Optional temperature override
 
         Returns:

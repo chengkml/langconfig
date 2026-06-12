@@ -56,15 +56,23 @@ class ContextWindowManager:
 
     # Default token limits by model (conservative estimates)
     MODEL_TOKEN_LIMITS = {
-        "gpt-4o": 128000,
-        "gpt-4o-mini": 128000,
+        "gpt-5.5": 1000000,
+        "gpt-5.4": 1000000,
+        "gpt-5.4-mini": 400000,
+        "gpt-5.4-nano": 400000,
         "gpt-4-turbo": 128000,
         "gpt-4": 8192,
         "gpt-3.5-turbo": 16385,
+        "claude-fable-5": 1000000,
+        "claude-opus-4-8": 1000000,
+        "claude-sonnet-4-6": 1000000,
         "claude-3-5-sonnet": 200000,
         "claude-3-opus": 200000,
         "claude-3-sonnet": 200000,
         "claude-3-haiku": 200000,
+        "gemini-3.1-pro-preview": 1048576,
+        "gemini-2.5-flash": 1000000,
+        "gemini-2.5-flash-lite": 1000000,
         "gemini-1.5-pro": 1000000,
         "gemini-1.5-flash": 1000000,
         "gemini-2.0-flash": 1000000,
@@ -73,7 +81,7 @@ class ContextWindowManager:
     def __init__(
         self,
         max_tokens: Optional[int] = None,
-        model_name: str = "gpt-4o",
+        model_name: str = "gpt-5.4",
         strategy: ContextStrategy = ContextStrategy.SMART,
         preserve_system_message: bool = True,
         summarization_threshold: int = 50,  # Summarize after N messages
@@ -363,7 +371,7 @@ class ContextWindowManager:
         try:
             if summarization_llm is None:
                 from langchain_openai import ChatOpenAI
-                summarization_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+                summarization_llm = ChatOpenAI(model="gpt-5.4-mini", temperature=0)
 
             summary_prompt = [
                 SystemMessage(content="""You are a conversation summarizer.
@@ -577,7 +585,7 @@ _default_manager: Optional[ContextWindowManager] = None
 
 
 def get_context_manager(
-    model_name: str = "gpt-4o",
+    model_name: str = "gpt-5.4",
     max_tokens: Optional[int] = None,
     strategy: ContextStrategy = ContextStrategy.SMART,
 ) -> ContextWindowManager:
@@ -598,7 +606,7 @@ def trim_messages_to_limit(
     messages: List[BaseMessage],
     max_tokens: int,
     strategy: str = "last",
-    model_name: str = "gpt-4o",
+    model_name: str = "gpt-5.4",
 ) -> List[BaseMessage]:
     """Convenience function to trim messages to a token limit"""
     manager = get_context_manager(model_name=model_name)
@@ -611,7 +619,7 @@ def trim_messages_to_limit(
 
 def count_message_tokens(
     messages: List[BaseMessage],
-    model_name: str = "gpt-4o",
+    model_name: str = "gpt-5.4",
 ) -> int:
     """Convenience function to count tokens in messages"""
     manager = get_context_manager(model_name=model_name)
