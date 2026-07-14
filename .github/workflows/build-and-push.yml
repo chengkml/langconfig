@@ -1,0 +1,79 @@
+name: 构建推送
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: langconfig-build-and-push
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ${{ vars.REGISTRY || 'crpi-u265r07n4blchcqo.cn-shanghai.personal.cr.aliyuncs.com' }}
+  REGISTRY_NAMESPACE: ${{ vars.REGISTRY_NAMESPACE || 'ck-registry' }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v6
+
+      - name: 生成镜像变量
+        id: vars
+        shell: bash
+        run: |
+          NS="${{ env.REGISTRY_NAMESPACE }}"
+          echo "api_image=${{ env.REGISTRY }}/${NS}/langconfig-api" >> "$GITHUB_OUTPUT"
+          echo "web_image=${{ env.REGISTRY }}/${NS}/langconfig-web" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: 安装 Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver-opts: |
+            image=docker.m.daocloud.io/moby/buildkit:buildx-stable-1
+
+      - name: 登录镜像仓库
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: 构建并推送 API 镜像
+        uses: docker/build-push-action@v7
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          pull: true
+          push: true
+          build-args: |
+            PIP_INDEX_URL=${{ secrets.PIP_INDEX_URL || vars.PIP_INDEX_URL || 'https://pypi.org/simple' }}
+            PIP_DEFAULT_TIMEOUT=${{ vars.PIP_DEFAULT_TIMEOUT || '120' }}
+          tags: |
+            ${{ steps.vars.outputs.api_image }}:${{ steps.vars.outputs.image_tag }}
+            ${{ steps.vars.outputs.api_image }}:latest
+          cache-from: type=gha,scope=langconfig-api
+          cache-to: type=gha,mode=max,scope=langconfig-api
+
+      - name: 构建并推送 Web 镜像
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          pull: true
+          push: true
+          build-args: |
+            NPM_REGISTRY=${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org' }}
+          tags: |
+            ${{ steps.vars.outputs.web_image }}:${{ steps.vars.outputs.image_tag }}
+            ${{ steps.vars.outputs.web_image }}:latest
+          cache-from: type=gha,scope=langconfig-web
+          cache-to: type=gha,mode=max,scope=langconfig-web
