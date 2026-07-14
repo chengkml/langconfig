@@ -43,6 +43,9 @@ llama-index
 llama-index-vector-stores-postgres
 llama-index-embeddings-huggingface
 llama-index-embeddings-openai
+# Pin huggingface-hub<1.2 to avoid pip backtracking: llama-index-embeddings-huggingface
+# requires the 'inference' extra which was removed in huggingface-hub>=1.2.
+huggingface-hub>=0.19,<1.2
 sentence-transformers>=3.2.0,<4  # stay on v3: embedding-vector compat with existing pgvector data
 pgvector
 numpy
