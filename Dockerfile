@@ -4,19 +4,20 @@
 # LICENSE file in the root directory of this source tree.
 
 # ---- Build stage ----
-FROM node:22-alpine AS builder
+FROM m.daocloud.io/docker.io/library/node:22-alpine AS builder
 
 WORKDIR /app
 
 COPY package.json package-lock.json ./
 ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG VITE_API_BASE_URL=""
 RUN npm config set registry "${NPM_REGISTRY}" && npm ci
 
 COPY . .
-RUN npm run build
+RUN VITE_API_BASE_URL="${VITE_API_BASE_URL}" npm run build
 
 # ---- Serve stage ----
-FROM nginx:alpine
+FROM m.daocloud.io/docker.io/library/nginx:alpine
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 
