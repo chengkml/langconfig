@@ -7,10 +7,14 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system dependencies required by psycopg, sentence-transformers, etc.
+# Install system dependencies required by psycopg, sentence-transformers, unstructured, etc.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
+    libreoffice-writer \
+    libreoffice-impress \
+    libreoffice-calc \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for Docker layer caching
