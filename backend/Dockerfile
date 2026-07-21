@@ -26,6 +26,9 @@ RUN pip install --no-cache-dir \
     --default-timeout "${PIP_DEFAULT_TIMEOUT}" \
     -r requirements.txt
 
+# spaCy English model for unstructured document parsing (sentence tokenization)
+RUN python -m spacy download en_core_web_sm
+
 # Copy application code
 COPY . .
 
